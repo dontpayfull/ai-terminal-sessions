@@ -2037,7 +2037,7 @@ async function cmdToggleCoPane(
     if (!choice) return;
   }
 
-  const next = setCoPane(current, mcpConfig, want);
+  const next = setCoPane(current, expanded, want);
   index.recordResumeFlags(target.hash, target.name, target.provider.id, next);
   const ok = await relaunchSession(tmuxPath, target, index, claudeTracker, next, 'CoPanel switch');
   if (!ok) return;
@@ -3045,6 +3045,12 @@ async function cmdResumeFromArchive(
   refresh();
 
   const chosen = await new Promise<Pick | undefined>((resolve) => {
+    let resolved = false;
+    const finish = (v: Pick | undefined) => {
+      if (resolved) return;
+      resolved = true;
+      resolve(v);
+    };
     qp.onDidTriggerItemButton(async (e) => {
       const s = e.item.sess;
       if (!s || !s.transcriptPath) return;
@@ -3063,9 +3069,9 @@ async function cmdResumeFromArchive(
     qp.onDidAccept(() => {
       const sel = qp.selectedItems[0];
       if (sel?.toggle) { scopeCwd = scopeCwd ? undefined : ws?.path; refresh(); return; }
-      resolve(sel);
+      finish(sel);
     });
-    qp.onDidHide(() => resolve(undefined));
+    qp.onDidHide(() => finish(undefined));
     qp.show();
   });
   qp.hide();
@@ -3109,6 +3115,8 @@ async function cmdResumeFromArchive(
   interface ActionPick extends vscode.QuickPickItem { action: TargetAction }
   const actions: ActionPick[] = [];
   const linkedTitle = linked ? (linked.label || linked.tabName || linked.sessionName) : undefined;
+  const convTitle = conversationTitle(s, id => index.getSessionName(id)).title;
+  const preferredLabel = linked?.label || convTitle;
 
   if (linked?.status === 'killed' && linked.killedEntry) {
     actions.push({
@@ -3123,18 +3131,18 @@ async function cmdResumeFromArchive(
       description: linked.status === 'stopped' ? 'Start stopped session in sidebar' : 'Switch to existing session',
     });
   }
+  actions.push({
+    action: 'new',
+    label: `$(add) Open in new session${preferredLabel ? ` "${preferredLabel}"` : ''} & resume`,
+    description: 'Create a new persistent terminal tab with this conversation title',
+  });
   if (active && activeName) {
     actions.push({
       action: 'active',
-      label: '$(terminal) Resume in active session',
+      label: '$(terminal) Resume inside current active terminal',
       description: active.name,
     });
   }
-  actions.push({
-    action: 'new',
-    label: '$(add) New session',
-    description: 'Create a new persistent terminal session',
-  });
 
   let chosenAction: TargetAction;
   if (actions.length === 1) {
@@ -3238,21 +3246,30 @@ async function cmdResumeFromArchive(
   index.recordWorkspace(ws.hash, ws.path, ws.label);
   const tabId = await nextSafeTabId(index, tmuxPath, cfg.sessionPrefix, ws.hash);
   const name = buildSessionName(cfg.sessionPrefix, ws.hash, tabId);
-  index.recordSession(ws.hash, name);
+  const newCwd = s.cwd || linked?.folderPath || ws.path;
+  const folderPathToStore = newCwd !== ws.path ? newCwd : undefined;
+  index.recordSession(ws.hash, name, preferredLabel, folderPathToStore);
+  index.recordAgentSession(ws.hash, name, s.agent, s.sessionId);
   const meta = index.getSessionMeta(ws.hash, name);
   const { icon, color } = metaIconAndColor(meta);
+  const termName = defaultTermName(ws.label, tabId, meta?.label);
   const term = vscode.window.createTerminal({
-    name: `${ws.label} ${tabId}`,
+    name: termName,
     shellPath: tmuxPath,
-    shellArgs: tmux.buildAttachOrCreateArgs(name, ws.path),
-    cwd: ws.path,
+    shellArgs: tmux.buildAttachOrCreateArgs(name, newCwd),
+    cwd: newCwd,
     iconPath: icon,
     color,
   });
   term.show();
   refreshSidebar();
+  await revealSessionInSidebar(name, true);
   await sleep(SHELL_INIT_DELAY_MS);
-  term.sendText(buildResumeCommand(provider, s.sessionId, s.transcriptPath, ws.path));
+  if (vscode.window.terminals.includes(term)) {
+    claudeTracker.reserveResume(s.sessionId, name);
+    const flags = index.getResumeFlags(ws.hash, name, provider.id);
+    term.sendText(buildResumeCommand(provider, s.sessionId, s.transcriptPath, newCwd, flags));
+  }
 }
 
 /**
