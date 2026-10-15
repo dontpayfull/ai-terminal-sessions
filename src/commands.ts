@@ -2002,14 +2002,6 @@ async function cmdToggleCoPane(
 ): Promise<void> {
   const cfg = getConfig();
   if (!cfg.copaneEnabled) return;
-  const mcpConfig = cfg.copaneMcpConfig.trim();
-  const expanded = mcpConfig.startsWith('~') ? path.join(os.homedir(), mcpConfig.slice(1)) : mcpConfig;
-  if (!mcpConfig || !fs.existsSync(expanded)) {
-    vscode.window.showWarningMessage(
-      `CoPanel: set terminalSessions.copanel.mcpConfig (or copane.mcpConfig) to your copanel.mcp.json${mcpConfig ? ` (not found: ${mcpConfig})` : ''}.`,
-    );
-    return;
-  }
   const tmuxPath = await requireTmux();
   if (!tmuxPath) return;
   const target = await resolveRelaunchTarget(
@@ -2028,9 +2020,17 @@ async function cmdToggleCoPane(
 
   const current = index.getResumeFlags(target.hash, target.name, target.provider.id);
   const want = !hasCoPane(current);
+  const mcpConfig = cfg.copaneMcpConfig.trim();
+  const expanded = mcpConfig.startsWith('~') ? path.join(os.homedir(), mcpConfig.slice(1)) : mcpConfig;
+  if (want && (!mcpConfig || !fs.existsSync(expanded))) {
+    vscode.window.showWarningMessage(
+      `CoPanel: set terminalSessions.copanel.mcpConfig (or copane.mcpConfig) to your copanel.mcp.json${mcpConfig ? ` (not found: ${mcpConfig})` : ''}.`,
+    );
+    return;
+  }
   if (isBusy(claudeTracker.getSnapshot(target.name))) {
     const choice = await vscode.window.showWarningMessage(
-      `Turn CoPane ${want ? 'on' : 'off'} for ${target.labelDisplay}?\n\n`
+      `Turn CoPanel ${want ? 'on' : 'off'} for ${target.labelDisplay}?\n\n`
       + `Claude is working right now — restarting will interrupt the current step.`,
       { modal: true }, want ? 'Turn On' : 'Turn Off',
     );
@@ -2039,12 +2039,12 @@ async function cmdToggleCoPane(
 
   const next = setCoPane(current, mcpConfig, want);
   index.recordResumeFlags(target.hash, target.name, target.provider.id, next);
-  const ok = await relaunchSession(tmuxPath, target, index, claudeTracker, next, 'CoPane switch');
+  const ok = await relaunchSession(tmuxPath, target, index, claudeTracker, next, 'CoPanel switch');
   if (!ok) return;
   vscode.window.showInformationMessage(
     want
-      ? `CoPane on for ${target.labelDisplay}. Confirm "I am using this for local development" in the terminal once.`
-      : `CoPane off for ${target.labelDisplay}.`,
+      ? `CoPanel on for ${target.labelDisplay}. Confirm "I am using this for local development" in the terminal once.`
+      : `CoPanel off for ${target.labelDisplay}.`,
   );
 }
 
@@ -3152,32 +3152,77 @@ async function cmdResumeFromArchive(
     const newName = buildSessionName(cfg.sessionPrefix, linked.workspaceHash, tabId);
     const restored = index.restoreKilled(linked.workspaceHash, linked.killedEntry.name, linked.killedEntry.killedAt, newName);
     if (!restored) { refreshSidebar(); return; }
-    // Ensure the chosen conversation is at the head so cmdStart resumes this exact transcript.
     index.recordAgentSession(linked.workspaceHash, restored.name, s.agent, s.sessionId);
     claudeTracker.forgetSession(linked.killedEntry.name);
+    const targetCwd = restored.meta.folderPath || linked.workspacePath || s.cwd || '';
+    const exists = await tmux.hasSession(tmuxPath, restored.name);
+    if (!exists) await tmux.createDetachedSession(tmuxPath, restored.name, targetCwd);
+    index.setSessionStopped(linked.workspaceHash, restored.name, false);
+    const term = await openTerminalForSession(restored.name, targetCwd, index, true);
     refreshSidebar();
-    await cmdStart(index, registry, claudeTracker, undefined, restored.name);
     await revealSessionInSidebar(restored.name, true);
+    if (term) {
+      await sleep(SHELL_INIT_DELAY_MS);
+      if (vscode.window.terminals.includes(term)) {
+        claudeTracker.reserveResume(s.sessionId, restored.name);
+        const flags = index.getResumeFlags(linked.workspaceHash, restored.name, provider.id);
+        term.sendText(buildResumeCommand(provider, s.sessionId, s.transcriptPath, targetCwd, flags));
+      }
+    }
     return;
   }
 
   if (chosenAction === 'openExisting' && linked) {
     index.recordAgentSession(linked.workspaceHash, linked.sessionName, s.agent, s.sessionId);
+    const targetCwd = linked.folderPath || linked.workspacePath || s.cwd || '';
+    const flags = index.getResumeFlags(linked.workspaceHash, linked.sessionName, provider.id);
+    const hasTmux = await tmux.hasSession(tmuxPath, linked.sessionName);
+    const existingTerm = findTerminalForSession(linked.sessionName);
+    const snap = claudeTracker.getSnapshot(linked.sessionName);
+    const agentRunning = Boolean(snap && snap.state !== 'none');
+
+    // If the tmux session is running a different conversation inside a live TUI,
+    // relaunch the pane cleanly onto the chosen conversation (confirming if busy)
+    // instead of typing `claude --resume` into the running TUI input.
+    if (hasTmux && agentRunning && snap?.sessionId !== s.sessionId) {
+      if (isBusy(snap)) {
+        const confirm = await vscode.window.showWarningMessage(
+          `Switch session "${linkedTitle}" to this conversation?\n\n${provider.displayName} is working right now — restarting will interrupt the current step.`,
+          { modal: true }, 'Switch & Resume',
+        );
+        if (confirm !== 'Switch & Resume') return;
+      }
+      const target: RelaunchTarget = {
+        name: linked.sessionName,
+        hash: linked.workspaceHash,
+        cwd: targetCwd,
+        labelDisplay: linkedTitle ? `"${linkedTitle}"` : linked.sessionName,
+        provider,
+        sessionId: s.sessionId,
+        transcriptPath: s.transcriptPath,
+      };
+      await relaunchSession(tmuxPath, target, index, claudeTracker, flags, 'Resume switch', existingTerm);
+      await revealSessionInSidebar(linked.sessionName, true);
+      return;
+    }
+
+    if (!hasTmux) {
+      await tmux.createDetachedSession(tmuxPath, linked.sessionName, targetCwd);
+    }
+    index.setSessionStopped(linked.workspaceHash, linked.sessionName, false);
+    const term = await openTerminalForSession(linked.sessionName, targetCwd, index);
+    refreshSidebar();
     await revealSessionInSidebar(linked.sessionName, true);
-    if (linked.status === 'stopped') {
-      await cmdStart(index, registry, claudeTracker, undefined, linked.sessionName);
-    } else {
-      const term = await openTerminalForSession(linked.sessionName, undefined, index, true);
-      if (term) {
-        const snap = claudeTracker.getSnapshot(linked.sessionName);
-        if (snap?.sessionId !== s.sessionId) {
-          const targetCwd = linked.folderPath || linked.workspacePath || s.cwd || '';
-          const flags = index.getResumeFlags(linked.workspaceHash, linked.sessionName, provider.id);
+    if (term) {
+      // Only send resume when the chosen conversation isn't already actively running in this pane.
+      if (!(hasTmux && agentRunning && snap?.sessionId === s.sessionId)) {
+        if (!existingTerm || !hasTmux) await sleep(SHELL_INIT_DELAY_MS);
+        if (vscode.window.terminals.includes(term)) {
+          claudeTracker.reserveResume(s.sessionId, linked.sessionName);
           term.sendText(buildResumeCommand(provider, s.sessionId, s.transcriptPath, targetCwd, flags));
         }
-        term.show();
       }
-      refreshSidebar();
+      term.show();
     }
     return;
   }

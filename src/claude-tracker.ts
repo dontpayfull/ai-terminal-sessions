@@ -1164,12 +1164,12 @@ export class ClaudeTracker {
     for (const lp of LOG_PATHS) this.processLog(lp);
   }
 
-  /** Feeds the whole lines in [from, to) of a log to handleLine. */
-  private readEvents(logPath: string, from: number, to: number): boolean {
+  /** Feeds the whole lines in [from, to) of an open fd to handleLine. */
+  private readEventsFromFd(fd: number, from: number, to: number): boolean {
     const bytes = to - from;
-    const fd = fs.openSync(logPath, 'r');
+    if (bytes <= 0) return false;
     const buf = Buffer.alloc(bytes);
-    try { fs.readSync(fd, buf, 0, bytes, from); } finally { fs.closeSync(fd); }
+    fs.readSync(fd, buf, 0, bytes, from);
     let changed = false;
     for (const line of buf.toString('utf8').split('\n')) {
       if (line && this.handleLine(line)) changed = true;
@@ -1179,29 +1179,39 @@ export class ClaudeTracker {
 
   private processLog(logPath: string): void {
     try {
-      const stat = fs.statSync(logPath);
-      const saved = this.logOffsets.get(logPath) ?? 0;
-      let offset = saved;
-      let changed = false;
-      const seenIno = this.logInodes.get(logPath);
-      this.logInodes.set(logPath, stat.ino);
-      if (seenIno !== undefined && seenIno !== stat.ino) {
-        // Rotated by another window: finish the old generation, now <log>.1,
-        // then read the new file from its start.
-        try {
-          const old = fs.statSync(`${logPath}.1`);
-          if (old.ino === seenIno && old.size > offset) changed = this.readEvents(`${logPath}.1`, offset, old.size);
-        } catch { /* already gone: nothing left to finish */ }
-        offset = 0;
-      } else if (stat.size < offset) {
-        offset = 0;
+      const fd = fs.openSync(logPath, 'r');
+      try {
+        const stat = fs.fstatSync(fd);
+        const saved = this.logOffsets.get(logPath) ?? 0;
+        let offset = saved;
+        let changed = false;
+        const seenIno = this.logInodes.get(logPath);
+        this.logInodes.set(logPath, stat.ino);
+        if (seenIno !== undefined && seenIno !== stat.ino) {
+          // Rotated by another window: finish the old generation, now <log>.1,
+          // then read the new file from its start.
+          try {
+            const oldFd = fs.openSync(`${logPath}.1`, 'r');
+            try {
+              const old = fs.fstatSync(oldFd);
+              if (old.ino === seenIno && old.size > offset) {
+                changed = this.readEventsFromFd(oldFd, offset, old.size);
+              }
+            } finally { fs.closeSync(oldFd); }
+          } catch { /* already gone: nothing left to finish */ }
+          offset = 0;
+        } else if (stat.size < offset) {
+          offset = 0;
+        }
+        if (stat.size > offset && this.readEventsFromFd(fd, offset, stat.size)) changed = true;
+        if (stat.size !== saved || seenIno !== stat.ino) {
+          this.logOffsets.set(logPath, stat.size);
+          this.saveOffset(logPath);
+        }
+        if (changed) this._onChange.fire();
+      } finally {
+        fs.closeSync(fd);
       }
-      if (stat.size > offset && this.readEvents(logPath, offset, stat.size)) changed = true;
-      if (stat.size !== saved) {
-        this.logOffsets.set(logPath, stat.size);
-        this.saveOffset(logPath);
-      }
-      if (changed) this._onChange.fire();
     } catch (e) {
       // statSync throws ENOENT if the log doesn't exist yet — benign.
       if ((e as NodeJS.ErrnoException)?.code !== 'ENOENT') {

@@ -4,6 +4,18 @@ All notable changes to the Terminal Sessions extension.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project uses semantic versioning once past 1.0.0.
 
+## [0.35.1] — 2026-10-15
+
+### Added
+- **Search and restore killed or stopped sessions from `$(history)`.** The **Resume Past Session** picker now links each conversation on disk to the Terminal Sessions tab that ran it (live, stopped or killed), shows the session name alongside the conversation title and a prompt preview, and offers a one-step **Restore killed session & resume** (or **Start / Open session & resume**) action that brings the tab back with its original name, icon, colour and folder. Killed and stopped sessions without a matching transcript in the current scan also appear in the list so you can find and restore them by session name.
+- **Toggle CoPanel on Claude sessions.** Optional side-panel integration (`terminalSessions.copanel.enabled` / `terminalSessions.copane.enabled`, off by default) that relaunches a Claude conversation with its CoPanel MCP config and development channel.
+
+### Changed
+- **Repository moved to [dontpayfull/ai-terminal-sessions](https://github.com/dontpayfull/ai-terminal-sessions).** The extension stays MIT-licensed and its Marketplace / Open VSX identity (`visul.terminal-sessions`) is unchanged; old GitHub links redirect automatically.
+
+### Fixed
+- **Live agent tracking stopped in already-open windows after log rotation.** When a newly opened window rotated `agent-events.log` (`> 16 MB` -> `.log.1`), windows that were already open kept watching the old file inode and missed every new session and event until reload. The tracker now watches the `~/.terminal-sessions` directory, drains any unread tail from `.log.1`, and switches to the new log file seamlessly.
+
 ## [0.34.5] — 2026-10-06
 
 ### Changed

@@ -290,12 +290,22 @@
         "terminalSessions.copane.enabled": {
           "type": "boolean",
           "default": false,
-          "markdownDescription": "Show the **Toggle CoPane** action on Claude sessions. CoPane is a browser side panel linked to a live Claude Code session through a local channel server. Turning it on for a session relaunches the conversation with `--mcp-config <copane.mcpConfig> --dangerously-load-development-channels server:copane`; Restart keeps it. Off by default."
+          "markdownDescription": "Show the **Toggle CoPanel** action on Claude sessions. CoPanel is a browser side panel linked to a live Claude Code session through a local channel server. Turning it on for a session relaunches the conversation with `--mcp-config <copane.mcpConfig> --dangerously-load-development-channels server:copanel`; Restart keeps it. Off by default."
         },
         "terminalSessions.copane.mcpConfig": {
           "type": "string",
           "default": "",
-          "markdownDescription": "Absolute path to the CoPane `copane.mcp.json` (the MCP config that starts the CoPane channel server). Used by **Toggle CoPane**."
+          "markdownDescription": "Absolute path to the CoPanel `copanel.mcp.json` (the MCP config that starts the CoPanel channel server). Used by **Toggle CoPanel**."
+        },
+        "terminalSessions.copanel.enabled": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Show the **Toggle CoPanel** action on Claude sessions. CoPanel is a browser side panel linked to a live Claude Code session through a local channel server. Turning it on for a session relaunches the conversation with `--mcp-config <copanel.mcpConfig> --dangerously-load-development-channels server:copanel`; Restart keeps it. Off by default."
+        },
+        "terminalSessions.copanel.mcpConfig": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Absolute path to the CoPanel `copanel.mcp.json` (the MCP config that starts the CoPanel channel server). Used by **Toggle CoPanel**."
         },
         "terminalSessions.claudeNoFlicker": {
           "type": "string",
@@ -1036,7 +1046,7 @@
         },
         {
           "command": "terminalSessions.toggleCoPane",
-          "when": "config.terminalSessions.copane.enabled"
+          "when": "config.terminalSessions.copane.enabled || config.terminalSessions.copanel.enabled"
         },
         {
           "command": "terminalSessions.lockedHint",
@@ -1204,7 +1214,7 @@
         },
         {
           "command": "terminalSessions.toggleCoPane",
-          "when": "config.terminalSessions.copane.enabled",
+          "when": "config.terminalSessions.copane.enabled || config.terminalSessions.copanel.enabled",
           "group": "navigation@17"
         }
       ],
@@ -1260,7 +1270,7 @@
         },
         {
           "command": "terminalSessions.toggleCoPane",
-          "when": "config.terminalSessions.copane.enabled",
+          "when": "config.terminalSessions.copane.enabled || config.terminalSessions.copanel.enabled",
           "group": "4_session@2"
         },
         {
@@ -1520,7 +1530,7 @@
         },
         {
           "command": "terminalSessions.toggleCoPane",
-          "when": "view == terminalSessions.sessions && config.terminalSessions.copane.enabled && viewItem =~ /\\.forkable/",
+          "when": "view == terminalSessions.sessions && (config.terminalSessions.copane.enabled || config.terminalSessions.copanel.enabled) && viewItem =~ /\\.forkable/",
           "group": "danger@0.3"
         },
         {
@@ -1787,7 +1797,7 @@
       "terminal/tab/context": [
         {
           "command": "terminalSessions.toggleCoPane",
-          "when": "config.terminalSessions.copane.enabled",
+          "when": "config.terminalSessions.copane.enabled || config.terminalSessions.copanel.enabled",
           "group": "4_session@2"
         }
       ]

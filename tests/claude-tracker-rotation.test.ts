@@ -59,7 +59,7 @@ function rotateLikeAnotherWindow(): void {
 function startTracker() {
   fs.rmSync(ROOT, { recursive: true, force: true });
   const index = fakeIndex();
-  const ctx = { extensionPath: fs.mkdtempSync(path.join(os.tmpdir(), 'ts-ext-')) };
+  const ctx = { extensionPath: fs.mkdtempSync(path.join(os.homedir(), 'ts-ext-')) };
   const tracker = new ClaudeTracker(ctx as never, new AgentRegistry(), index as never);
   tracker.start();
   return { tracker, index };
