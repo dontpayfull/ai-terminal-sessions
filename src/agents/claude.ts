@@ -35,6 +35,8 @@ const CLAUDE_FLAGS: FlagSpec = {
     '--add-dir': { path: true },
     '--settings': { path: true },
     '--mcp-config': { path: true },
+    // CoPane and other dev channels: without it a Restart silently unloads them
+    '--dangerously-load-development-channels': {},
   },
   companion: { '--strict-mcp-config': '--mcp-config' },
 };

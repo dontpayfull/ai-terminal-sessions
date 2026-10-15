@@ -1,0 +1,3 @@
+{"ts":1775822400000,"type":"session","id":"root-sess-1","directory":"/Users/test/projects/opencode-app","title":"Refactor auth"}
+{"ts":1775822401000,"type":"user","sessionID":"root-sess-1","messageID":"m1","text":"Refactor the auth layer"}
+{"ts":1775822402000,"type":"assistant","sessionID":"root-sess-1"

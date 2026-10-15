@@ -1,0 +1,8 @@
+{"ts":1775822400000,"type":"session","id":"root-sess-1","directory":"/Users/test/projects/opencode-app","title":"Refactor auth"}
+{"ts":1775822401000,"type":"user","sessionID":"root-sess-1","messageID":"m1","text":"Refactor the auth layer"}
+{"ts":1775822402000,"type":"assistant","sessionID":"root-sess-1","messageID":"m2","providerID":"anthropic","modelID":"claude-3-5-sonnet","cost":0.015,"tokens":{"input":1200,"output":300,"reasoning":0,"cacheRead":500,"cacheWrite":200,"total":2200},"completed":1775822402500}
+{"ts":1775822403000,"type":"text","sessionID":"root-sess-1","messageID":"m2","role":"assistant","text":"Starting refactor now."}
+{"ts":1775822404000,"type":"tool","sessionID":"root-sess-1","messageID":"m2","callID":"c1","tool":"bash","status":"running","input":"npm test"}
+{"ts":1775822405000,"type":"tool","sessionID":"root-sess-1","messageID":"m2","callID":"c1","tool":"bash","status":"completed","output":"PASS"}
+{"ts":1775822406000,"type":"turn_end","sessionID":"root-sess-1","error":false}
+{"ts":1775822407000,"type":"session","id":"child-sess-1","parentID":"root-sess-1","title":"Subtask reviewer","agent":"reviewer"}

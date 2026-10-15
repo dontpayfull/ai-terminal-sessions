@@ -265,6 +265,7 @@ export class ClaudeTracker {
   private lastNotifyPerWs = new Map<string, number>();
   private lastWaitingNotifyPerSession = new Map<string, number>();
   private logOffsets = new Map<string, number>();   // logPath → byte offset
+  private logInodes = new Map<string, number>();    // logPath → inode last read
   private flagCapTried = new Set<string>();          // tmuxSession we've read launch flags for
   private grokTimer?: ReturnType<typeof setInterval>;
   private grokPolling = false;   // re-entrancy guard: a slow poll must not stack
@@ -1118,6 +1119,7 @@ export class ClaudeTracker {
         try { fs.renameSync(lp, `${lp}.1`); } catch { continue; }
         fs.writeFileSync(lp, '');
         this.logOffsets.set(lp, 0);
+        this.logInodes.set(lp, fs.statSync(lp).ino);
         this.saveOffset(lp);
       } catch { /* ENOENT or busy — skip */ }
     }
@@ -1141,14 +1143,20 @@ export class ClaudeTracker {
     catch { /* noop */ }
   }
 
+  /** Watches the folder, not the logs: every window tails the same logs, and
+   *  when a newly opened one rotates them, a watch on the file follows the
+   *  renamed inode to <log>.1, so a window that was already open never heard
+   *  another event (no live state, no session id recorded for new sessions). */
   private watch(): void {
-    for (const lp of LOG_PATHS) {
-      try {
-        this.watchers.push(fs.watch(lp, { persistent: false }, () => this.processLog(lp)));
-      } catch (e) {
-        // File may not exist yet — ensureFiles creates both, so this is rare.
-        console.error('[terminal-sessions] claude-tracker watch:', lp, e);
-      }
+    const byName = new Map(LOG_PATHS.map(lp => [path.basename(lp), lp]));
+    try {
+      this.watchers.push(fs.watch(ROOT, { persistent: false }, (_event, file) => {
+        if (!file) { this.processNewEvents(); return; }
+        const lp = byName.get(file.toString());
+        if (lp) this.processLog(lp);
+      }));
+    } catch (e) {
+      console.error('[terminal-sessions] claude-tracker watch:', ROOT, e);
     }
   }
 
@@ -1156,25 +1164,43 @@ export class ClaudeTracker {
     for (const lp of LOG_PATHS) this.processLog(lp);
   }
 
+  /** Feeds the whole lines in [from, to) of a log to handleLine. */
+  private readEvents(logPath: string, from: number, to: number): boolean {
+    const bytes = to - from;
+    const fd = fs.openSync(logPath, 'r');
+    const buf = Buffer.alloc(bytes);
+    try { fs.readSync(fd, buf, 0, bytes, from); } finally { fs.closeSync(fd); }
+    let changed = false;
+    for (const line of buf.toString('utf8').split('\n')) {
+      if (line && this.handleLine(line)) changed = true;
+    }
+    return changed;
+  }
+
   private processLog(logPath: string): void {
     try {
       const stat = fs.statSync(logPath);
-      let offset = this.logOffsets.get(logPath) ?? 0;
-      if (stat.size === offset) return;
-      if (stat.size < offset) offset = 0;
-      const bytes = stat.size - offset;
-      const fd = fs.openSync(logPath, 'r');
-      const buf = Buffer.alloc(bytes);
-      fs.readSync(fd, buf, 0, bytes, offset);
-      fs.closeSync(fd);
-      const text = buf.toString('utf8');
-      const lines = text.split('\n').filter(Boolean);
+      const saved = this.logOffsets.get(logPath) ?? 0;
+      let offset = saved;
       let changed = false;
-      for (const line of lines) {
-        if (this.handleLine(line)) changed = true;
+      const seenIno = this.logInodes.get(logPath);
+      this.logInodes.set(logPath, stat.ino);
+      if (seenIno !== undefined && seenIno !== stat.ino) {
+        // Rotated by another window: finish the old generation, now <log>.1,
+        // then read the new file from its start.
+        try {
+          const old = fs.statSync(`${logPath}.1`);
+          if (old.ino === seenIno && old.size > offset) changed = this.readEvents(`${logPath}.1`, offset, old.size);
+        } catch { /* already gone: nothing left to finish */ }
+        offset = 0;
+      } else if (stat.size < offset) {
+        offset = 0;
       }
-      this.logOffsets.set(logPath, stat.size);
-      this.saveOffset(logPath);
+      if (stat.size > offset && this.readEvents(logPath, offset, stat.size)) changed = true;
+      if (stat.size !== saved) {
+        this.logOffsets.set(logPath, stat.size);
+        this.saveOffset(logPath);
+      }
       if (changed) this._onChange.fire();
     } catch (e) {
       // statSync throws ENOENT if the log doesn't exist yet — benign.

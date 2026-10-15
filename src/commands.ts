@@ -19,10 +19,10 @@ import { ClaudeTracker, isBusy, agentsAtWork, runningAgents } from './claude-tra
 import { ClaudeSearchIndex, SessionIndexEntry } from './claude-search';
 import { transcriptPathFor, findTranscriptBySessionId, readTranscriptCwd, readTranscriptSummary, writeClaudeCustomTitle, queueClaudeLiveTitle } from './claude-transcript';
 import { transcriptToMarkdown } from './transcript-render';
-import { scanArchive, ArchivedSession, classifyForCleanup, softDeleteSession } from './archive';
+import { scanArchive, ArchivedSession, classifyForCleanup, softDeleteSession, buildSessionConversationIndex, LinkedTerminalSession } from './archive';
 import { planTrash, executeTrash, formatBytes } from './trash';
 import { AgentRegistry, isForkableAgent, yoloSpecFor, yoloFlagsFor } from './agents/registry';
-import { isYolo, setYolo } from './agents/launch-flags';
+import { isYolo, setYolo, hasCoPane, setCoPane } from './agents/launch-flags';
 import { readClaudeCleanupDays, setClaudeCleanupDays, snoozeCleanupNotice, countExpiringTranscripts, clearExpiryCache, KEEP_FOREVER_DAYS } from './notices';
 import type { AgentProvider, AgentId } from './agents/types';
 import type { TerminalTracker } from './terminal-tracker';
@@ -284,6 +284,7 @@ export function registerCommands(
       for (const r of many) await cmdSwitchYolo(index, registry, claudeTracker, false, r);
     }),
     vscode.commands.registerCommand(COMMAND.toggleYolo, (item?: SessionTreeItem | vscode.Terminal) => cmdSwitchYolo(index, registry, claudeTracker, undefined, item)),
+    vscode.commands.registerCommand(COMMAND.toggleCoPane, (item?: SessionTreeItem | vscode.Terminal) => cmdToggleCoPane(index, registry, claudeTracker, item)),
     vscode.commands.registerCommand(COMMAND.stop, async (item?: SessionTreeItem | vscode.Terminal, selection?: vscode.TreeItem[]) => {
       const many = selectionTargets(selection);
       if (!many) return cmdStop(index, claudeTracker, item);
@@ -374,7 +375,7 @@ export function registerCommands(
     vscode.commands.registerCommand(COMMAND.setGroupColor, (item?: GroupTreeItem) => cmdSetGroupColor(index, item)),
     vscode.commands.registerCommand(COMMAND.moveSessionToGroup, (item?: SessionTreeItem, selection?: vscode.TreeItem[]) => cmdMoveSessionToGroup(index, item, selection)),
     vscode.commands.registerCommand(COMMAND.resumeOtherClaude, (item?: SessionTreeItem) => cmdResumeOtherClaude(index, registry, claudeTracker, item)),
-    vscode.commands.registerCommand(COMMAND.resumeFromArchive, () => cmdResumeFromArchive(index, registry)),
+    vscode.commands.registerCommand(COMMAND.resumeFromArchive, () => cmdResumeFromArchive(index, registry, claudeTracker)),
     vscode.commands.registerCommand(COMMAND.cleanupSessions, () => cmdCleanupSessions(index, registry)),
     vscode.commands.registerCommand(COMMAND.revealSessionFolder, (arg?: unknown) => cmdRevealSessionFolder(index, 'explorer', arg)),
     vscode.commands.registerCommand(COMMAND.revealSessionFolderFinder, (arg?: unknown) => cmdRevealSessionFolder(index, 'finder', arg)),
@@ -1987,6 +1988,67 @@ async function cmdSwitchYolo(
 }
 
 /**
+ * Turn CoPane (the browser side panel linked to this conversation) on or off.
+ * Like the YOLO switch it is a pair of launch flags, so it relaunches the
+ * conversation; the flags are then kept by every later Restart. Gated by the
+ * `terminalSessions.copane.enabled` setting (off by default), so nobody sees
+ * it without opting in.
+ */
+async function cmdToggleCoPane(
+  index: SessionIndex,
+  registry: AgentRegistry,
+  claudeTracker: ClaudeTracker,
+  item?: SessionTreeItem | vscode.Terminal,
+): Promise<void> {
+  const cfg = getConfig();
+  if (!cfg.copaneEnabled) return;
+  const mcpConfig = cfg.copaneMcpConfig.trim();
+  const expanded = mcpConfig.startsWith('~') ? path.join(os.homedir(), mcpConfig.slice(1)) : mcpConfig;
+  if (!mcpConfig || !fs.existsSync(expanded)) {
+    vscode.window.showWarningMessage(
+      `CoPanel: set terminalSessions.copanel.mcpConfig (or copane.mcpConfig) to your copanel.mcp.json${mcpConfig ? ` (not found: ${mcpConfig})` : ''}.`,
+    );
+    return;
+  }
+  const tmuxPath = await requireTmux();
+  if (!tmuxPath) return;
+  const target = await resolveRelaunchTarget(
+    tmuxPath, index, registry, claudeTracker, item,
+    'Toggle CoPanel for which session?',
+  );
+  if (!target) return;
+  if (target.provider.id !== 'claude') {
+    vscode.window.showInformationMessage(`CoPanel works with Claude Code sessions only (this one is ${target.provider.displayName}).`);
+    return;
+  }
+  if (!target.sessionId) {
+    vscode.window.showWarningMessage(`No Claude conversation found in ${target.labelDisplay}. Start one first.`);
+    return;
+  }
+
+  const current = index.getResumeFlags(target.hash, target.name, target.provider.id);
+  const want = !hasCoPane(current);
+  if (isBusy(claudeTracker.getSnapshot(target.name))) {
+    const choice = await vscode.window.showWarningMessage(
+      `Turn CoPane ${want ? 'on' : 'off'} for ${target.labelDisplay}?\n\n`
+      + `Claude is working right now — restarting will interrupt the current step.`,
+      { modal: true }, want ? 'Turn On' : 'Turn Off',
+    );
+    if (!choice) return;
+  }
+
+  const next = setCoPane(current, mcpConfig, want);
+  index.recordResumeFlags(target.hash, target.name, target.provider.id, next);
+  const ok = await relaunchSession(tmuxPath, target, index, claudeTracker, next, 'CoPane switch');
+  if (!ok) return;
+  vscode.window.showInformationMessage(
+    want
+      ? `CoPane on for ${target.labelDisplay}. Confirm "I am using this for local development" in the terminal once.`
+      : `CoPane off for ${target.labelDisplay}.`,
+  );
+}
+
+/**
  * Fork the conversation running in a session into a NEW parallel session/tab.
  * Sidebar-only (the `forkable` contextValue gate keeps it off non-Claude rows).
  * The new session resumes the same conversation with the provider's fork command
@@ -2846,16 +2908,18 @@ async function cmdMoveSessionToGroup(index: SessionIndex, item?: SessionTreeItem
 }
 
 /**
- * Resume ANY past session from disk (cross-agent), even when nothing is live in
- * tmux for it. Scans every enabled provider's on-disk sessions (default: the
- * current workspace's cwd; a toggle widens to all projects). Each row has an eye
- * button (View Conversation) and an edit button (Name Conversation). Accepting a
- * row resumes it into the active Terminal Sessions terminal (if any) or a new
- * persistent session.
+ * Resume ANY past session from disk (cross-agent) or restore a killed/stopped
+ * Terminal Sessions pane. Scans every enabled provider's on-disk sessions
+ * (default: the current workspace's cwd; a toggle widens to all projects),
+ * enriches each row with the Terminal Sessions pane (live, stopped, or killed)
+ * that ran it, and also lists killed/stopped panes whose transcripts aren't in
+ * the scan so they remain searchable by session name. Each transcript row has
+ * an eye button (View Conversation) and an edit button (Name Conversation).
  */
 async function cmdResumeFromArchive(
   index: SessionIndex,
   registry: AgentRegistry,
+  claudeTracker: ClaudeTracker,
 ): Promise<void> {
   const ws = currentWorkspace();
   let scopeCwd: string | undefined = ws?.path;
@@ -2863,27 +2927,100 @@ async function cmdResumeFromArchive(
   const eyeBtn: vscode.QuickInputButton = { iconPath: new vscode.ThemeIcon('book'), tooltip: 'View Conversation' };
   const editBtn: vscode.QuickInputButton = { iconPath: new vscode.ThemeIcon('edit'), tooltip: 'Rename Conversation' };
 
-  interface Pick extends vscode.QuickPickItem { sess?: ArchivedSession; toggle?: boolean }
+  interface Pick extends vscode.QuickPickItem {
+    sess?: ArchivedSession;
+    linked?: LinkedTerminalSession;
+    toggle?: boolean;
+  }
+
+  const formatAge = (ms: number): string => {
+    const ageMin = Math.max(0, Math.round((Date.now() - ms) / 60000));
+    return ageMin < 60 ? `${ageMin}m` : ageMin < 60 * 24 ? `${Math.round(ageMin / 60)}h` : `${Math.round(ageMin / 60 / 24)}d`;
+  };
 
   const build = (): Pick[] => {
     const sessions = scanArchive(registry.enabled(), (id) => index.getSessionName(id), scopeCwd);
+    const { byConversationId, allLinkedSessions } = buildSessionConversationIndex(index.getAllWorkspaces());
+    const coveredSessionKeys = new Set<string>();
+
     const rows: Pick[] = sessions.slice(0, 500).map(s => {
       const provider = registry.getProvider(s.agent);
       const badge = provider?.displayName || s.agent;
-      const primary = conversationTitle(s, id => index.getSessionName(id)).title || '(no user message)';
+      const titleInfo = conversationTitle(s, id => index.getSessionName(id));
+      const primary = titleInfo.title || '(no user message)';
       const lines = (s.lineCount ?? 0).toLocaleString();
-      const ageMs = Date.now() - (s.mtimeMs ?? Date.now());
-      const ageMin = Math.round(ageMs / 60000);
-      const ageStr = ageMin < 60 ? `${ageMin}m` : ageMin < 60 * 24 ? `${Math.round(ageMin / 60)}h` : `${Math.round(ageMin / 60 / 24)}d`;
+      const ageStr = formatAge(s.mtimeMs ?? Date.now());
       const cwdShort = s.cwd ? s.cwd.replace(/^\/Users\/[^/]+\//, '~/') : '?';
+      const linked = byConversationId.get(s.sessionId);
+      if (linked) coveredSessionKeys.add(`${linked.status}:${linked.workspaceHash}:${linked.sessionName}:${linked.killedAt ?? ''}`);
+
+      const tsLabel = linked ? (linked.label || linked.tabName || linked.sessionName) : undefined;
+      const statusBadge = linked
+        ? (linked.status === 'killed'
+          ? `[Killed${linked.killedAt ? ' ' + formatAge(new Date(linked.killedAt).getTime()) + ' ago' : ''}]`
+          : linked.status === 'stopped' ? '[Stopped]' : '[Live]')
+        : undefined;
+      const icon = linked?.status === 'killed' ? 'history'
+        : linked?.status === 'stopped' ? 'debug-stop'
+        : 'comment-discussion';
+
+      // Show session name prominently when it differs from the conversation title.
+      const labelText = tsLabel && tsLabel.toLowerCase() !== primary.toLowerCase()
+        ? `${tsLabel} · ${primary}`
+        : primary;
+      const descParts = [
+        statusBadge,
+        badge,
+        `${lines} lines`,
+        `${ageStr} ago`,
+        s.sessionId.slice(0, 8),
+      ].filter(Boolean);
+
+      // Include firstUserMessage snippet in detail when the title came from a
+      // custom/auto rename so the user sees what was discussed and can search it.
+      const promptPreview = s.firstUserMessage?.replace(/\s+/g, ' ').trim().slice(0, 120);
+      const detailParts = [cwdShort];
+      if (tsLabel && linked?.tabName && linked.tabName !== tsLabel) detailParts.push(linked.tabName);
+      if (promptPreview && promptPreview.toLowerCase() !== primary.toLowerCase()) {
+        detailParts.push(`"${promptPreview}"`);
+      }
+
       return {
         sess: s,
-        label: `$(comment-discussion) ${primary}`,
-        description: `${badge} · ${lines} lines · ${ageStr} ago · ${s.sessionId.slice(0, 8)}`,
-        detail: cwdShort,
+        linked,
+        label: `$(${icon}) ${labelText}`,
+        description: descParts.join(' · '),
+        detail: detailParts.join(' · '),
         buttons: [eyeBtn, editBtn],
       };
     });
+
+    // Also surface Killed / Stopped sessions that had no matching transcript in
+    // the scan (e.g. shell-only sessions or transcripts pruned/outside scope)
+    // so searching by session name in $(history) always finds and restores them.
+    for (const linked of allLinkedSessions) {
+      if (linked.status === 'live') continue;
+      if (scopeCwd && linked.workspacePath !== scopeCwd && linked.folderPath !== scopeCwd) continue;
+      const key = `${linked.status}:${linked.workspaceHash}:${linked.sessionName}:${linked.killedAt ?? ''}`;
+      if (coveredSessionKeys.has(key)) continue;
+      const tsLabel = linked.label || linked.tabName || linked.sessionName;
+      const tsMs = linked.killedAt ? new Date(linked.killedAt).getTime()
+        : linked.stoppedAt ? new Date(linked.stoppedAt).getTime()
+        : Date.now();
+      const statusBadge = linked.status === 'killed'
+        ? `[Killed ${formatAge(tsMs)} ago]`
+        : '[Stopped]';
+      const icon = linked.status === 'killed' ? 'history' : 'debug-stop';
+      const cwd = linked.folderPath || linked.workspacePath;
+      const cwdShort = cwd ? cwd.replace(/^\/Users\/[^/]+\//, '~/') : '?';
+      rows.push({
+        linked,
+        label: `$(${icon}) ${tsLabel}`,
+        description: `${statusBadge} · ${linked.workspaceLabel} · ${linked.sessionName}`,
+        detail: cwdShort,
+      });
+    }
+
     const toggle: Pick = {
       toggle: true,
       label: scopeCwd ? '$(globe) Show sessions from all projects...' : '$(home) Show only this workspace',
@@ -2893,6 +3030,7 @@ async function cmdResumeFromArchive(
   };
 
   const qp = vscode.window.createQuickPick<Pick>();
+  qp.matchOnDescription = true;
   qp.matchOnDetail = true;
   // Keep the picker open when a row button (View / Name) opens another UI —
   // otherwise the focus change hides it and the user must re-run the command and
@@ -2900,8 +3038,8 @@ async function cmdResumeFromArchive(
   qp.ignoreFocusOut = true;
   const refresh = () => {
     qp.placeholder = scopeCwd
-      ? `Resume a past session (this workspace${ws?.label ? ' — ' + ws.label : ''})`
-      : 'Resume a past session (all projects)';
+      ? `Search & resume sessions or killed tabs (this workspace${ws?.label ? ' — ' + ws.label : ''})`
+      : 'Search & resume sessions or killed tabs (all projects)';
     qp.items = build();
   };
   refresh();
@@ -2911,9 +3049,9 @@ async function cmdResumeFromArchive(
       const s = e.item.sess;
       if (!s || !s.transcriptPath) return;
       if (e.button === eyeBtn) {
-                await vscode.commands.executeCommand(COMMAND.viewConversation, { transcriptPath: s.transcriptPath, title: conversationTitle(s, id => index.getSessionName(id)).title });
+        await vscode.commands.executeCommand(COMMAND.viewConversation, { transcriptPath: s.transcriptPath, title: conversationTitle(s, id => index.getSessionName(id)).title });
       } else if (e.button === editBtn) {
-                const name = await vscode.commands.executeCommand<string | undefined>(COMMAND.nameSession, {
+        const name = await vscode.commands.executeCommand<string | undefined>(COMMAND.nameSession, {
           sessionId: s.sessionId,
           current: conversationTitle(s, id => index.getSessionName(id), 200).title,
           transcriptPath: s.transcriptPath,
@@ -2932,9 +3070,31 @@ async function cmdResumeFromArchive(
   });
   qp.hide();
   qp.dispose();
-  if (!chosen?.sess?.transcriptPath) return;
+  if (!chosen) return;
 
   const s = chosen.sess;
+  const linked = chosen.linked;
+
+  // Standalone killed/stopped session without a transcript row: restore or start directly.
+  if (!s) {
+    if (!linked) return;
+    if (linked.status === 'killed' && linked.killedEntry) {
+      await cmdRestoreKilled(
+        index, registry, claudeTracker,
+        new KilledSessionItem(linked.workspaceHash, linked.killedEntry),
+      );
+    } else if (linked.status === 'stopped') {
+      await revealSessionInSidebar(linked.sessionName, true);
+      await cmdStart(index, registry, claudeTracker, undefined, linked.sessionName);
+    } else {
+      await revealSessionInSidebar(linked.sessionName, true);
+      await openTerminalForSession(linked.sessionName, undefined, index);
+      refreshSidebar();
+    }
+    return;
+  }
+
+  if (!s.transcriptPath) return;
   const provider = registry.getProvider(s.agent);
   if (!provider) return;
 
@@ -2942,20 +3102,87 @@ async function cmdResumeFromArchive(
   if (!tmuxPath) return;
   const cfg = getConfig();
 
-  // Resume target: reuse the active TS terminal if the user has one, else make a
-  // new persistent session. The provider's buildResumeCommand handles cd-to-cwd.
   const active = vscode.window.activeTerminal;
   const activeName = active ? await resolveTmuxNameForTerminalLive(active, index, cfg.sessionPrefix) : undefined;
-  let useActive = false;
+
+  type TargetAction = 'restoreKilled' | 'openExisting' | 'active' | 'new';
+  interface ActionPick extends vscode.QuickPickItem { action: TargetAction }
+  const actions: ActionPick[] = [];
+  const linkedTitle = linked ? (linked.label || linked.tabName || linked.sessionName) : undefined;
+
+  if (linked?.status === 'killed' && linked.killedEntry) {
+    actions.push({
+      action: 'restoreKilled',
+      label: `$(history) Restore killed session "${linkedTitle}" & resume`,
+      description: 'Reopen with original name, icon, color and folder',
+    });
+  } else if (linked && (linked.status === 'stopped' || linked.status === 'live')) {
+    actions.push({
+      action: 'openExisting',
+      label: `$(${linked.status === 'stopped' ? 'play' : 'terminal'}) ${linked.status === 'stopped' ? 'Start' : 'Open'} session "${linkedTitle}" & resume`,
+      description: linked.status === 'stopped' ? 'Start stopped session in sidebar' : 'Switch to existing session',
+    });
+  }
   if (active && activeName) {
-    const choice = await vscode.window.showQuickPick(['Resume in active session', 'New session'], {
+    actions.push({
+      action: 'active',
+      label: '$(terminal) Resume in active session',
+      description: active.name,
+    });
+  }
+  actions.push({
+    action: 'new',
+    label: '$(add) New session',
+    description: 'Create a new persistent terminal session',
+  });
+
+  let chosenAction: TargetAction;
+  if (actions.length === 1) {
+    chosenAction = actions[0].action;
+  } else {
+    const pick = await vscode.window.showQuickPick<ActionPick>(actions, {
       placeHolder: 'Where should this conversation resume?',
     });
-    if (!choice) return;
-    useActive = choice === 'Resume in active session';
+    if (!pick) return;
+    chosenAction = pick.action;
   }
 
-  if (useActive && active) {
+  if (chosenAction === 'restoreKilled' && linked?.killedEntry) {
+    const tabId = await nextSafeTabId(index, tmuxPath, cfg.sessionPrefix, linked.workspaceHash);
+    const newName = buildSessionName(cfg.sessionPrefix, linked.workspaceHash, tabId);
+    const restored = index.restoreKilled(linked.workspaceHash, linked.killedEntry.name, linked.killedEntry.killedAt, newName);
+    if (!restored) { refreshSidebar(); return; }
+    // Ensure the chosen conversation is at the head so cmdStart resumes this exact transcript.
+    index.recordAgentSession(linked.workspaceHash, restored.name, s.agent, s.sessionId);
+    claudeTracker.forgetSession(linked.killedEntry.name);
+    refreshSidebar();
+    await cmdStart(index, registry, claudeTracker, undefined, restored.name);
+    await revealSessionInSidebar(restored.name, true);
+    return;
+  }
+
+  if (chosenAction === 'openExisting' && linked) {
+    index.recordAgentSession(linked.workspaceHash, linked.sessionName, s.agent, s.sessionId);
+    await revealSessionInSidebar(linked.sessionName, true);
+    if (linked.status === 'stopped') {
+      await cmdStart(index, registry, claudeTracker, undefined, linked.sessionName);
+    } else {
+      const term = await openTerminalForSession(linked.sessionName, undefined, index, true);
+      if (term) {
+        const snap = claudeTracker.getSnapshot(linked.sessionName);
+        if (snap?.sessionId !== s.sessionId) {
+          const targetCwd = linked.folderPath || linked.workspacePath || s.cwd || '';
+          const flags = index.getResumeFlags(linked.workspaceHash, linked.sessionName, provider.id);
+          term.sendText(buildResumeCommand(provider, s.sessionId, s.transcriptPath, targetCwd, flags));
+        }
+        term.show();
+      }
+      refreshSidebar();
+    }
+    return;
+  }
+
+  if (chosenAction === 'active' && active) {
     active.sendText(buildResumeCommand(provider, s.sessionId, s.transcriptPath, s.cwd || ''));
     active.show();
     return;

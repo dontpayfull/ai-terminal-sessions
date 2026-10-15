@@ -51,6 +51,8 @@ export interface Config {
   claudeNoFlicker: boolean;
   revealActiveSession: boolean;
   confirmYoloSwitch: boolean;
+  copaneEnabled: boolean;
+  copaneMcpConfig: string;
   showNotesFolder: boolean;
   showFavoritesFolder: boolean;
   showOpenFolder: boolean;
@@ -133,6 +135,8 @@ export function getConfig(): Config {
     })(),
     revealActiveSession: c.get('revealActiveSession', true),
     confirmYoloSwitch: c.get('confirmYoloSwitch', true),
+    copaneEnabled: c.get('copanel.enabled') ?? c.get('copane.enabled', false),
+    copaneMcpConfig: c.get('copanel.mcpConfig') || c.get('copane.mcpConfig', ''),
     showNotesFolder: c.get('showNotesFolder', true),
     showFavoritesFolder: c.get('showFavoritesFolder', true),
     showOpenFolder: c.get('showOpenFolder', true),
@@ -213,6 +217,7 @@ export const COMMAND = {
   switchToYolo: 'terminalSessions.switchToYolo',
   switchToNormal: 'terminalSessions.switchToNormal',
   toggleYolo: 'terminalSessions.toggleYolo',
+  toggleCoPane: 'terminalSessions.toggleCoPane',
   stop: 'terminalSessions.stop',
   forkConversation: 'terminalSessions.forkConversation',
   unlinkBranch: 'terminalSessions.unlinkBranch',

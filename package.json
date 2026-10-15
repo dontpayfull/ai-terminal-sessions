@@ -2,7 +2,7 @@
   "name": "terminal-sessions",
   "displayName": "AI Terminal Sessions",
   "description": "Persistent terminals for your AI coding agents in Cursor/VSCode via tmux — survive editor restart, workspace-scoped. Live AI-agent status in the sidebar for Claude Code, Codex, Antigravity, Grok, and OpenCode: working/tool/waiting state, context-window %, cost, last user/assistant messages. Browse, view, name, resume, and clean up every past conversation on your machine.",
-  "version": "0.34.5",
+  "version": "0.35.1",
   "publisher": "visul",
   "license": "MIT",
   "icon": "media/extension-icon.png",
@@ -221,7 +221,7 @@
         "terminalSessions.brandedNotifier": {
           "type": "boolean",
           "default": false,
-          "markdownDescription": "Post macOS notifications from Terminal Sessions' own bundle, so they carry its icon and get their own entry in **System Settings > Notifications** (where you can switch them to persistent `Alerts`). Without it they wear the Terminal icon and file themselves under `terminal-notifier`, which macOS never registers there, so their style cannot be changed at all. Built on first use from your installed `terminal-notifier` and re-signed ad-hoc; needs `terminal-notifier` plus the Xcode command line tools, and falls back to the normal path in silence if either is missing. **macOS asks once whether to allow notifications from it \u2014 dismiss that prompt and notifications stop until you allow them in System Settings.** Hence off by default."
+          "markdownDescription": "Post macOS notifications from Terminal Sessions' own bundle, so they carry its icon and get their own entry in **System Settings > Notifications** (where you can switch them to persistent `Alerts`). Without it they wear the Terminal icon and file themselves under `terminal-notifier`, which macOS never registers there, so their style cannot be changed at all. Built on first use from your installed `terminal-notifier` and re-signed ad-hoc; needs `terminal-notifier` plus the Xcode command line tools, and falls back to the normal path in silence if either is missing. **macOS asks once whether to allow notifications from it — dismiss that prompt and notifications stop until you allow them in System Settings.** Hence off by default."
         },
         "terminalSessions.notificationSenderIcon": {
           "type": "boolean",
@@ -286,6 +286,16 @@
           "type": "boolean",
           "default": true,
           "description": "Ask for confirmation before switching a session into YOLO mode, where the agent stops asking you to approve tool use, file writes and shell commands. Switching back to normal mode is never gated. A session that is actively working is always confirmed regardless of this setting, since restarting interrupts it."
+        },
+        "terminalSessions.copane.enabled": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Show the **Toggle CoPane** action on Claude sessions. CoPane is a browser side panel linked to a live Claude Code session through a local channel server. Turning it on for a session relaunches the conversation with `--mcp-config <copane.mcpConfig> --dangerously-load-development-channels server:copane`; Restart keeps it. Off by default."
+        },
+        "terminalSessions.copane.mcpConfig": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Absolute path to the CoPane `copane.mcp.json` (the MCP config that starts the CoPane channel server). Used by **Toggle CoPane**."
         },
         "terminalSessions.claudeNoFlicker": {
           "type": "string",
@@ -658,6 +668,12 @@
         "icon": "$(zap)"
       },
       {
+        "command": "terminalSessions.toggleCoPane",
+        "title": "Toggle CoPanel (browser side panel)",
+        "category": "Terminal Sessions",
+        "icon": "$(layout-sidebar-right)"
+      },
+      {
         "command": "terminalSessions.stop",
         "title": "Stop Session (keep in sidebar)",
         "icon": "$(debug-pause)"
@@ -1019,6 +1035,10 @@
           "when": "false"
         },
         {
+          "command": "terminalSessions.toggleCoPane",
+          "when": "config.terminalSessions.copane.enabled"
+        },
+        {
           "command": "terminalSessions.lockedHint",
           "when": "false"
         },
@@ -1181,6 +1201,11 @@
         {
           "command": "terminalSessions.copySessionPath",
           "group": "navigation@16"
+        },
+        {
+          "command": "terminalSessions.toggleCoPane",
+          "when": "config.terminalSessions.copane.enabled",
+          "group": "navigation@17"
         }
       ],
       "terminal/title/context": [
@@ -1232,6 +1257,11 @@
           "command": "terminalSessions.switchToNormal",
           "when": "terminalSessions.activeTerminalYolo == 'on'",
           "group": "4_session@1"
+        },
+        {
+          "command": "terminalSessions.toggleCoPane",
+          "when": "config.terminalSessions.copane.enabled",
+          "group": "4_session@2"
         },
         {
           "command": "terminalSessions.muteSession",
@@ -1487,6 +1517,11 @@
           "command": "terminalSessions.switchToNormal",
           "when": "view == terminalSessions.sessions && viewItem =~ /\\.yoloOn(\\.attn)?$/",
           "group": "danger@0.2"
+        },
+        {
+          "command": "terminalSessions.toggleCoPane",
+          "when": "view == terminalSessions.sessions && config.terminalSessions.copane.enabled && viewItem =~ /\\.forkable/",
+          "group": "danger@0.3"
         },
         {
           "command": "terminalSessions.rename",
@@ -1747,6 +1782,13 @@
           "command": "terminalSessions.disableNotesFolder",
           "when": "view == terminalSessions.sessions && viewItem == notesFolder",
           "group": "9_manage@1"
+        }
+      ],
+      "terminal/tab/context": [
+        {
+          "command": "terminalSessions.toggleCoPane",
+          "when": "config.terminalSessions.copane.enabled",
+          "group": "4_session@2"
         }
       ]
     },
@@ -2061,6 +2103,7 @@
   "scripts": {
     "compile": "tsc -p ./",
     "watch": "tsc -w -p ./",
+    "test": "rm -rf out-test && tsc -p tsconfig.test.json && node --require ./out-test/tests/helpers/setup.js --test 'out-test/tests/**/*.test.js'",
     "package": "npx @vscode/vsce package",
     "install-extension": "code --install-extension terminal-sessions-0.1.0.vsix --force"
   },

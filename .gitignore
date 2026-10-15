@@ -5,3 +5,4 @@ out/
 .env
 *.log
 _other_extensions/
+out-test/

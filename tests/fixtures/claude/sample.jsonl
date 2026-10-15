@@ -1,0 +1,6 @@
+{"type":"user","message":{"role":"user","content":"Please refactor the parser"},"uuid":"u-1","cwd":"/Users/test/projects/my-app","timestamp":"2026-10-10T10:00:00.000Z"}
+{"type":"ai-title","aiTitle":"Refactor parser","sessionId":"00000000-0000-4000-8000-000000000001"}
+{"type":"assistant","message":{"role":"assistant","model":"claude-sonnet-4-6","content":[{"type":"text","text":"I will help you refactor the parser."},{"type":"tool_use","id":"tool-1","name":"Read","input":{"file_path":"/Users/test/projects/my-app/parser.ts"}}],"usage":{"input_tokens":500,"output_tokens":100,"cache_read_input_tokens":200,"cache_creation_input_tokens":50}},"uuid":"a-1","timestamp":"2026-10-10T10:00:05.000Z"}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1","content":"export function parse() {}"}]},"uuid":"u-2","cwd":"/Users/test/projects/my-app","timestamp":"2026-10-10T10:00:06.000Z"}
+{"type":"assistant","message":{"role":"assistant","model":"claude-sonnet-4-6","content":[{"type":"text","text":"Done with refactoring."}],"usage":{"input_tokens":600,"output_tokens":80,"cache_read_input_tokens":250,"cache_creation_input_tokens":0}},"uuid":"a-2","timestamp":"2026-10-10T10:00:10.000Z"}
+{"type":"custom-title","customTitle":"Parser Refactor Task","sessionId":"00000000-0000-4000-8000-000000000001"}

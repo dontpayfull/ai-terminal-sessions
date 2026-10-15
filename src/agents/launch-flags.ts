@@ -225,6 +225,32 @@ export function setYolo(
   return out;
 }
 
+// CoPanel / CoPane (browser side panel linked to the session) rides on two launch flags:
+// its MCP config file, and the dev-channel opt-in that lets that server push
+// messages into the conversation. Both are recognised by value, so other
+// --mcp-config / channel entries the user launched with are left alone.
+export const COPANE_CHANNEL = 'server:copanel';
+export const LEGACY_COPANE_CHANNEL = 'server:copane';
+const DEV_CHANNELS = '--dangerously-load-development-channels';
+
+export function hasCoPane(flags: readonly string[]): boolean {
+  return flags.some((t, i) => t === DEV_CHANNELS && (flags[i + 1] === COPANE_CHANNEL || flags[i + 1] === LEGACY_COPANE_CHANNEL));
+}
+
+/** Return `flags` with CoPanel forced on or off (canonical: strip, then append). */
+export function setCoPane(flags: readonly string[], mcpConfig: string, on: boolean): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < flags.length; i++) {
+    const name = flags[i];
+    const value = flags[i + 1];
+    if (name === DEV_CHANNELS && (value === COPANE_CHANNEL || value === LEGACY_COPANE_CHANNEL)) { i++; continue; }
+    if (name === '--mcp-config' && value !== undefined && expandHome(value) === expandHome(mcpConfig)) { i++; continue; }
+    out.push(name);
+  }
+  if (on) out.push('--mcp-config', mcpConfig, DEV_CHANNELS, COPANE_CHANNEL);
+  return out;
+}
+
 /** Single-quote every token before it is appended to a resume command string.
  *  Whitespace-only quoting left values like `/x/$(id)` bare, so a captured flag
  *  value carrying shell metacharacters could be expanded when the command runs.

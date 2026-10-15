@@ -1,12 +1,136 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import type { AgentProvider, AgentSessionSummary } from './agents/types';
+import type { AgentId, AgentProvider, AgentSessionSummary } from './agents/types';
 import type { TranscriptSummary } from './claude-transcript';
+import type { KilledEntry, SessionLabel, WorkspaceEntry } from './types';
 
 /** A past session found on disk, plus its sidecar friendly name if any. */
 export interface ArchivedSession extends AgentSessionSummary {
   friendlyName?: string;
+}
+
+/** Terminal Sessions metadata linked to a conversation (or a standalone
+ *  killed/stopped/live session row in the archive picker). */
+export interface LinkedTerminalSession {
+  status: 'live' | 'stopped' | 'killed';
+  workspaceHash: string;
+  workspacePath: string;
+  workspaceLabel: string;
+  sessionName: string;
+  label?: string;
+  tabName?: string;
+  folderPath?: string;
+  killedEntry?: KilledEntry;
+  killedAt?: string;
+  stoppedAt?: string;
+  isHead: boolean;
+}
+
+function collectSessionAgentRefs(meta: SessionLabel): Array<{ agent: AgentId; id: string; isHead: boolean }> {
+  const out: Array<{ agent: AgentId; id: string; isHead: boolean }> = [];
+  const seen = new Set<string>();
+  const tagged = meta.agentSessions ?? [];
+  tagged.forEach((r, idx) => {
+    const key = `${r.agent}:${r.id}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      out.push({ agent: r.agent, id: r.id, isHead: idx === 0 });
+    }
+  });
+  const legacy: string[] = [];
+  if (meta.lastClaudeSessionId) legacy.push(meta.lastClaudeSessionId);
+  for (const id of meta.claudeSessionHistory ?? []) {
+    if (!legacy.includes(id)) legacy.push(id);
+  }
+  legacy.forEach((id, idx) => {
+    const key = `claude:${id}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      out.push({ agent: 'claude', id, isHead: out.length === 0 && idx === 0 });
+    }
+  });
+  return out;
+}
+
+/**
+ * Build a lookup from conversation `sessionId` to the Terminal Sessions pane
+ * (live, stopped, or killed in the graveyard) that owns or ran it, plus a list
+ * of killed/stopped sessions that have no matching on-disk transcript in the
+ * current scan so the user can still find and restore them by session name.
+ *
+ * Precedence when multiple panes reference the same conversation id:
+ *   1. Live/stopped session where the id is the head conversation
+ *   2. Killed session where the id is the head conversation
+ *   3. Live/stopped session where the id is in history
+ *   4. Killed session where the id is in history
+ */
+export function buildSessionConversationIndex(
+  workspaces: Record<string, WorkspaceEntry>,
+): {
+  byConversationId: Map<string, LinkedTerminalSession>;
+  allLinkedSessions: LinkedTerminalSession[];
+} {
+  const byConversationId = new Map<string, LinkedTerminalSession>();
+  const rankOf = (link: LinkedTerminalSession): number => {
+    if (link.status !== 'killed' && link.isHead) return 4;
+    if (link.status === 'killed' && link.isHead) return 3;
+    if (link.status !== 'killed') return 2;
+    return 1;
+  };
+  const allLinkedSessions: LinkedTerminalSession[] = [];
+
+  for (const [hash, ws] of Object.entries(workspaces)) {
+    for (const [sessionName, meta] of Object.entries(ws.sessions ?? {})) {
+      const status: 'live' | 'stopped' = meta.stopped ? 'stopped' : 'live';
+      const base: LinkedTerminalSession = {
+        status,
+        workspaceHash: hash,
+        workspacePath: ws.path,
+        workspaceLabel: ws.label,
+        sessionName,
+        label: meta.label,
+        tabName: meta.tabName,
+        folderPath: meta.folderPath,
+        stoppedAt: meta.stoppedAt,
+        isHead: true,
+      };
+      allLinkedSessions.push(base);
+      for (const ref of collectSessionAgentRefs(meta)) {
+        const candidate: LinkedTerminalSession = { ...base, isHead: ref.isHead };
+        const prev = byConversationId.get(ref.id);
+        if (!prev || rankOf(candidate) > rankOf(prev)) {
+          byConversationId.set(ref.id, candidate);
+        }
+      }
+    }
+
+    for (const k of ws.killed ?? []) {
+      const base: LinkedTerminalSession = {
+        status: 'killed',
+        workspaceHash: hash,
+        workspacePath: ws.path,
+        workspaceLabel: ws.label,
+        sessionName: k.name,
+        label: k.meta.label,
+        tabName: k.meta.tabName,
+        folderPath: k.meta.folderPath,
+        killedEntry: k,
+        killedAt: k.killedAt,
+        isHead: true,
+      };
+      allLinkedSessions.push(base);
+      for (const ref of collectSessionAgentRefs(k.meta)) {
+        const candidate: LinkedTerminalSession = { ...base, isHead: ref.isHead };
+        const prev = byConversationId.get(ref.id);
+        if (!prev || rankOf(candidate) > rankOf(prev)) {
+          byConversationId.set(ref.id, candidate);
+        }
+      }
+    }
+  }
+
+  return { byConversationId, allLinkedSessions };
 }
 
 /**

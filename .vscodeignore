@@ -13,3 +13,6 @@ tsconfig.json
 .gitignore
 .eslintrc.json
 .editorconfig
+tests/**
+out-test/**
+tsconfig.test.json
