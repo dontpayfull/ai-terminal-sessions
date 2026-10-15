@@ -1186,7 +1186,6 @@ export class ClaudeTracker {
         let offset = saved;
         let changed = false;
         const seenIno = this.logInodes.get(logPath);
-        this.logInodes.set(logPath, stat.ino);
         if (seenIno !== undefined && seenIno !== stat.ino) {
           // Rotated by another window: finish the old generation, now <log>.1,
           // then read the new file from its start.
@@ -1204,6 +1203,7 @@ export class ClaudeTracker {
           offset = 0;
         }
         if (stat.size > offset && this.readEventsFromFd(fd, offset, stat.size)) changed = true;
+        this.logInodes.set(logPath, stat.ino);
         if (stat.size !== saved || seenIno !== stat.ino) {
           this.logOffsets.set(logPath, stat.size);
           this.saveOffset(logPath);

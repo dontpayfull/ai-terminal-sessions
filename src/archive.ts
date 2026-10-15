@@ -27,15 +27,15 @@ export interface LinkedTerminalSession {
   isHead: boolean;
 }
 
-function collectSessionAgentRefs(meta: SessionLabel): Array<{ agent: AgentId; id: string; isHead: boolean }> {
-  const out: Array<{ agent: AgentId; id: string; isHead: boolean }> = [];
+function collectSessionAgentRefs(meta: SessionLabel): Array<{ agent: AgentId; id: string; isHead: boolean; ts: number }> {
+  const out: Array<{ agent: AgentId; id: string; isHead: boolean; ts: number }> = [];
   const seen = new Set<string>();
   const tagged = meta.agentSessions ?? [];
   tagged.forEach((r, idx) => {
     const key = `${r.agent}:${r.id}`;
     if (!seen.has(key)) {
       seen.add(key);
-      out.push({ agent: r.agent, id: r.id, isHead: idx === 0 });
+      out.push({ agent: r.agent, id: r.id, isHead: idx === 0, ts: r.ts ?? -(idx + 1) });
     }
   });
   const legacy: string[] = [];
@@ -47,7 +47,7 @@ function collectSessionAgentRefs(meta: SessionLabel): Array<{ agent: AgentId; id
     const key = `claude:${id}`;
     if (!seen.has(key)) {
       seen.add(key);
-      out.push({ agent: 'claude', id, isHead: out.length === 0 && idx === 0 });
+      out.push({ agent: 'claude', id, isHead: out.length === 0 && idx === 0, ts: -(tagged.length + idx + 1) });
     }
   });
   return out;
@@ -64,6 +64,7 @@ function collectSessionAgentRefs(meta: SessionLabel): Array<{ agent: AgentId; id
  *   2. Killed session where the id is the head conversation
  *   3. Live/stopped session where the id is in history
  *   4. Killed session where the id is in history
+ * Ties within the same rank go to the newer timestamp.
  */
 export function buildSessionConversationIndex(
   workspaces: Record<string, WorkspaceEntry>,
@@ -72,6 +73,7 @@ export function buildSessionConversationIndex(
   allLinkedSessions: LinkedTerminalSession[];
 } {
   const byConversationId = new Map<string, LinkedTerminalSession>();
+  const bestRank = new Map<string, { rank: number; ts: number }>();
   const rankOf = (link: LinkedTerminalSession): number => {
     if (link.status !== 'killed' && link.isHead) return 4;
     if (link.status === 'killed' && link.isHead) return 3;
@@ -98,9 +100,11 @@ export function buildSessionConversationIndex(
       allLinkedSessions.push(base);
       for (const ref of collectSessionAgentRefs(meta)) {
         const candidate: LinkedTerminalSession = { ...base, isHead: ref.isHead };
-        const prev = byConversationId.get(ref.id);
-        if (!prev || rankOf(candidate) > rankOf(prev)) {
+        const r = rankOf(candidate);
+        const prev = bestRank.get(ref.id);
+        if (!prev || r > prev.rank || (r === prev.rank && ref.ts > prev.ts)) {
           byConversationId.set(ref.id, candidate);
+          bestRank.set(ref.id, { rank: r, ts: ref.ts });
         }
       }
     }
@@ -122,9 +126,11 @@ export function buildSessionConversationIndex(
       allLinkedSessions.push(base);
       for (const ref of collectSessionAgentRefs(k.meta)) {
         const candidate: LinkedTerminalSession = { ...base, isHead: ref.isHead };
-        const prev = byConversationId.get(ref.id);
-        if (!prev || rankOf(candidate) > rankOf(prev)) {
+        const r = rankOf(candidate);
+        const prev = bestRank.get(ref.id);
+        if (!prev || r > prev.rank || (r === prev.rank && ref.ts > prev.ts)) {
           byConversationId.set(ref.id, candidate);
+          bestRank.set(ref.id, { rank: r, ts: ref.ts });
         }
       }
     }
