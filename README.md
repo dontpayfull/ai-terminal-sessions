@@ -278,9 +278,9 @@ from where you are typing.
 
 ### Separators in the tab list
 
-A long tab list reads better in sections. Pick **Separator** from the `+ ∨`
-dropdown, type a name (or leave it empty for a plain line) and drag the new
-tab where the section starts.
+A long tab list reads better in sections. Pick **Session Separator** from
+the `+ ∨` dropdown, type a name (or leave it empty for a plain line)
+and drag the new tab where the section starts.
 
 ```
  my-app #3
@@ -442,7 +442,7 @@ Three moving pieces, each independent, composed to give you a persistent and obs
 
 ### UI integration
 - **Terminal Profile "Persistent Session"** — available in the `+ ∨` dropdown; can be set as default so every new terminal auto-wraps in tmux
-- **Terminal Profile "Separator"**: a named divider tab for the terminal tab list, dragged into place like any tab. Clicking it returns focus to the tab you were on; it survives a window reload in place. See [Separators in the tab list](#separators-in-the-tab-list)
+- **Terminal Profile "Session Separator"**: a named divider tab for the terminal tab list, dragged into place like any tab. Clicking it returns focus to the tab you were on; it survives a window reload in place. See [Separators in the tab list](#separators-in-the-tab-list)
 - **Sidebar tree view** — grouped by workspace, with status indicators (attached vs detached) and relative timestamps. Lives **under the Explorer** by default; drag it (or right-click its header → *Move View*) to your own Activity Bar icon, the panel, or the secondary sidebar
 - **Rich hover tooltip** — hovering a session row shows its tmux ID, workspace, the actual **start folder (cwd)** for subfolder sessions, created/last-attached times, and — while an agent is active — the live **Conversation ID**, model, API-equivalent cost, context %, token totals, and the last user/assistant messages
 - **Sidebar badge** — a red numeric badge appears on the view's host icon (the Explorer, or wherever you've placed the view) when Claude sessions need attention. `waiting` count takes priority (user permission pending), falls back to `working` count. Tooltip explains which is which

@@ -4,6 +4,12 @@ All notable changes to the Terminal Sessions extension.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project uses semantic versioning once past 1.0.0.
 
+## [0.36.1] — 2026-10-23
+
+### Changed
+
+- The separator entry in the `+ ∨` dropdown is now called **Session Separator**, next to **Persistent Session**.
+
 ## [0.36.0] — 2026-10-23
 
 ### Added
