@@ -7,7 +7,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the
 ## [Unreleased]
 
 ### Added
-- **Keep Tab When Stopped.** A per-session option on the tab and row menus. Stop then keeps the tab where it is, greyed with ⏸ in front of its name, and Start brings the session back in that same tab with its conversation. The sessions you do not mark close their tab on Stop as before.
+- **Keep Tab When Stopped.** A per-session option on the tab menu (**Toggle Keep Tab When Stopped** on a sidebar row). Stop then keeps the tab where it is, greyed with ⏸ in front of its name, and Start brings the session back in that same tab with its conversation. The sessions you do not mark close their tab on Stop as before.
 - **Sessions folder.** Each workspace's groups and ungrouped sessions now sit in one **Sessions** folder below the pinned folders (Favorite, Active, Recent, Killed), so a collapsed workspace is a handful of rows. `terminalSessions.showSessionsFolder: false` restores the old layout.
 - **Separators come back in place after a Cursor restart.** Re-attach All recreates separator tabs together with the sessions, in the same order.
 - **Separator tabs.** Pick **Separator** from the `+ ∨` dropdown to add a named divider to the terminal tab list and drag it where a section starts. Clicking it sends focus back to the tab you were on. It is an idle shell (about 2 MB, no CPU, no tmux), so the panel keeps it in place across a window reload, and Ctrl+C or typing inside it does nothing.

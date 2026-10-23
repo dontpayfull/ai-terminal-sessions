@@ -293,22 +293,29 @@ tab where the section starts.
 
 - Clicking a separator does not leave you on an empty screen: focus goes
   straight back to the tab you were on
-- Rename, recolour or close it like any tab; closing removes it
+- Rename or close it like any tab; closing removes it. A colour picked
+  from the tab menu is not kept when Re-attach All or Restart All
+  recreates it
 - It is a real tab running an idle shell (about 2 MB, no CPU, no tmux), so
   the panel keeps it in place across a window reload. Ctrl+C and typing
   inside it do nothing
-- After a full Cursor restart, **Re-attach All** recreates the separators
-  together with the sessions, in the same order, so every section comes
-  back where it was; **Restart All** does the same. A separator you
-  renamed by hand is left alone
+- After a Cursor restart (tmux still running), **Re-attach All**
+  recreates the separators together with the sessions, in the same order,
+  so every section comes back where it was; **Restart All** does the same.
+  After a reboot the sessions come back stopped and the separators may
+  need a drag. A separator you renamed by hand is left alone. The order is
+  the one Cursor reports, which is the tab list as it was restored when
+  the window opened: a tab dragged since then is rebuilt where it was
+  created
 - Separators never appear in the sidebar and never get agent state
 - macOS, Linux, WSL and Remote-SSH (it needs a POSIX shell)
 
 ### Keep a stopped session's tab
 
 Normally **Stop** closes the session's tab. For the sessions you want to
-keep in view, right-click the tab (or the sidebar row) and pick **Keep
-Tab When Stopped**. A Stop then keeps the tab where it is:
+keep in view, right-click the tab and pick **Keep Tab When Stopped** (on
+a sidebar row: **Toggle Keep Tab When Stopped**). A Stop then keeps the
+tab where it is:
 
 ```
  my-app - Pricing #7
@@ -323,8 +330,9 @@ Tab When Stopped**. A Stop then keeps the tab where it is:
   the ⏸ is always there
 - **Start** (on the tab menu, the sidebar row, or a click on the row)
   brings the session back in that same tab and resumes its conversation
-- **Re-attach All** and **Restart All** keep these tabs in place too,
-  also after a reboot
+- **Re-attach All** and **Restart All** keep these tabs in place after a
+  Cursor restart. After a reboot, Re-attach All parks them again, though
+  the tab order may need a drag
 - **Close Tab When Stopped** turns it off; the other sessions keep the
   usual behaviour
 

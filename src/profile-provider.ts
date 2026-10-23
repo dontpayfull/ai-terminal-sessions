@@ -321,7 +321,18 @@ export async function openTerminalForSession(
             throw e;
           }
           index.setSessionParked(parsed0.hash, name, false);
-          forceNew = false;
+          // Reuse only the tab proven to be this session's. The `#<id>` name
+          // match below could hand back another workspace's tab, and the
+          // caller types a resume into whatever comes back. No proven tab
+          // (closed, or in another window): a new one.
+          const kept = await findVerifiedTabForSession(name);
+          if (kept) {
+            await clearParkedTitle(kept);
+            kept.show();
+            setTimeout(() => { try { kept.show(); } catch { /* disposed */ } }, 0);
+            return kept;
+          }
+          forceNew = true;
         }
       } else {
         // The placeholder is gone (killed, reboot): the flag is stale.

@@ -317,7 +317,7 @@ export class SessionTreeItem extends vscode.TreeItem {
       // A stopped session still carries the flags Start will relaunch with, so a
       // yolo one must say so BEFORE the click — clicking this row runs Start
       // directly, with no confirmation anywhere on that path.
-      this.description = `${session.favorite ? '★ ' : ''}stopped${session.parked ? ' · tab kept' : ''} · idle ${ageHint}${session.locked ? ' · 🔒' : ''}`
+      this.description = `${session.favorite ? '★ ' : ''}stopped${session.parked && session.attached ? ' · tab kept' : ''} · idle ${ageHint}${session.locked ? ' · 🔒' : ''}`
         + (session.yolo ? ' · 🚨' : '');
       this.collapsibleState = vscode.TreeItemCollapsibleState.None;
       this.resourceUri = vscode.Uri.parse(

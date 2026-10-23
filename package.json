@@ -1579,7 +1579,7 @@
         },
         {
           "command": "terminalSessions.rename",
-          "when": "view == terminalSessions.sessions && viewItem =~ /^session/",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session(?!sFolder)/",
           "group": "edit@1"
         },
         {
@@ -1594,7 +1594,7 @@
         },
         {
           "command": "terminalSessions.moveSessionToGroup",
-          "when": "view == terminalSessions.sessions && viewItem =~ /^session/",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session(?!sFolder)/",
           "group": "edit@0"
         },
         {
@@ -1609,32 +1609,32 @@
         },
         {
           "command": "terminalSessions.resumeOtherClaude",
-          "when": "view == terminalSessions.sessions && viewItem =~ /^session/",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session(?!sFolder)/",
           "group": "open@3"
         },
         {
           "command": "terminalSessions.viewConversation",
-          "when": "view == terminalSessions.sessions && viewItem =~ /^session/",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session(?!sFolder)/",
           "group": "open@6"
         },
         {
           "command": "terminalSessions.revealSessionFolder",
-          "when": "view == terminalSessions.sessions && viewItem =~ /^session/",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session(?!sFolder)/",
           "group": "open@4"
         },
         {
           "command": "terminalSessions.revealSessionFolderFinder",
-          "when": "view == terminalSessions.sessions && viewItem =~ /^session/",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session(?!sFolder)/",
           "group": "open@5"
         },
         {
           "command": "terminalSessions.copySessionId",
-          "when": "view == terminalSessions.sessions && viewItem =~ /^session/",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session(?!sFolder)/",
           "group": "open_copy@1"
         },
         {
           "command": "terminalSessions.copySessionPath",
-          "when": "view == terminalSessions.sessions && viewItem =~ /^session/",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session(?!sFolder)/",
           "group": "open_copy@2"
         },
         {
@@ -1679,12 +1679,12 @@
         },
         {
           "command": "terminalSessions.setIcon",
-          "when": "view == terminalSessions.sessions && viewItem =~ /^session/",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session(?!sFolder)/",
           "group": "edit@2"
         },
         {
           "command": "terminalSessions.setColor",
-          "when": "view == terminalSessions.sessions && viewItem =~ /^session/",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session(?!sFolder)/",
           "group": "edit@3"
         },
         {

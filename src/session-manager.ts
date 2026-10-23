@@ -995,6 +995,7 @@ export async function enrichSessions(
       // Stop on a keep-tab session.
       stopped: Boolean(meta?.stopped && meta?.parked),
       parked: Boolean(meta?.stopped && meta?.parked),
+      stoppedAt: meta?.stopped && meta?.parked && meta.stoppedAt ? new Date(meta.stoppedAt) : undefined,
       keepTab: meta?.keepTab,
       groupId: meta?.groupId,
       branchSetId: meta?.branchSetId,

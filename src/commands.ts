@@ -2322,13 +2322,17 @@ async function cmdStop(
   // Only a tab proven to be this session's: a `#<id>` name match could be
   // another workspace's tab, which would then get the ⏸.
   const keptTab = stopMeta?.keepTab ? (asTab ?? await findVerifiedTabForSession(name)) : undefined;
-  if (keptTab && !keptTab.exitStatus) {
+  const tabHere = Boolean(keptTab && !keptTab.exitStatus);
+  // The tab may live in another window: a tmux client still attached says so.
+  const tabElsewhere = Boolean(stopMeta?.keepTab && !tabHere
+    && (await tmux.listSessions(tmuxPath, cfg.sessionPrefix).catch(() => [])).some(r => r.name === name && r.attached));
+  if (tabHere || tabElsewhere) {
     try {
       await tmux.parkSession(tmuxPath, name, label || name);
       index.setSessionStopped(parsed.hash, name, true);
       index.setSessionParked(parsed.hash, name, true);
       claudeTracker.forgetSession(name);
-      if (!keptTab.name.startsWith(PARKED_PREFIX)) await retitleTab(keptTab, PARKED_PREFIX + keptTab.name);
+      if (keptTab && tabHere && !keptTab.name.startsWith(PARKED_PREFIX)) await retitleTab(keptTab, PARKED_PREFIX + keptTab.name);
       void syncActiveTerminalContext(index);
       refreshSidebar();
     } catch (e) {
@@ -2704,15 +2708,22 @@ async function cmdReattachAll(
   while (slots.length > 0 && !slots[0].entry) {
     if (slots.shift()!.liveTab) skippedLive++;
   }
-  // Recreated tabs land at the end. With a separator among them, a live tab
-  // left behind would end up in the wrong section, so those are reconnected
-  // in their turn too (a soft reconnect: tmux keeps running, nothing resumes).
-  const moveLive = toReattach.length > 0 && slots.some(x => x.sep);
+  // Recreated tabs land at the end. A live tab left behind would then sit in
+  // front of them: in the wrong section when a separator is among them, out
+  // of place when it is a kept (parked) tab. Then the live tabs after the
+  // first recreated one are reconnected in their turn too (a soft reconnect:
+  // tmux keeps running, nothing resumes).
+  const liveNames = new Map<vscode.Terminal, string | undefined>();
+  for (const x of slots) {
+    // eslint-disable-next-line no-await-in-loop
+    if (x.liveTab) liveNames.set(x.liveTab, await resolveTmuxNameForTerminalLive(x.liveTab, index, cfg.sessionPrefix));
+  }
+  const moveLive = toReattach.length > 0 && (slots.some(x => x.sep)
+    || [...liveNames.values()].some(n => n !== undefined && byName.get(n)?.parked));
   for (let i = 0; i < slots.length; i++) {
     const tab = slots[i].liveTab;
     if (!tab) continue;
-    // eslint-disable-next-line no-await-in-loop
-    const name = moveLive ? await resolveTmuxNameForTerminalLive(tab, index, cfg.sessionPrefix) : undefined;
+    const name = moveLive ? liveNames.get(tab) : undefined;
     const s = name ? byName.get(name) : undefined;
     if (!name || !s || queued.has(name)) {
       skippedLive++;

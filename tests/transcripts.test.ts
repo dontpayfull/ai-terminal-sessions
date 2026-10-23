@@ -549,3 +549,30 @@ test('Claude reduceClaudeTranscriptLine treats stderr output as a finished local
   }));
   assert.equal(state.snapshot.lastLocalCommandName, undefined);
 });
+
+test('Claude reduceClaudeTranscriptLine marks a cancelled compaction as failed', () => {
+  const state = makeTailState(claudeProvider);
+  reduceClaudeTranscriptLine(state, JSON.stringify({
+    type: 'user',
+    message: { role: 'user', content: '<command-name>/compact</command-name>' },
+    timestamp: '2026-10-19T12:00:00.000Z',
+  }));
+  reduceClaudeTranscriptLine(state, JSON.stringify({
+    type: 'system', subtype: 'local_command',
+    content: '<local-command-stdout>Compaction canceled.</local-command-stdout>',
+    timestamp: '2026-10-19T12:00:03.000Z',
+  }));
+  assert.equal(state.snapshot.lastLocalCommandName, '/compact');
+  assert.equal(state.snapshot.lastLocalCommandFailed, true);
+  reduceClaudeTranscriptLine(state, JSON.stringify({
+    type: 'user',
+    message: { role: 'user', content: '<command-name>/compact</command-name>' },
+    timestamp: '2026-10-19T12:01:00.000Z',
+  }));
+  reduceClaudeTranscriptLine(state, JSON.stringify({
+    type: 'user',
+    message: { role: 'user', content: '<local-command-stdout>Compacted (ctrl+o to see full summary)</local-command-stdout>' },
+    timestamp: '2026-10-19T12:02:00.000Z',
+  }));
+  assert.equal(state.snapshot.lastLocalCommandFailed, false);
+});

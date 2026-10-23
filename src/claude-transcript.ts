@@ -58,6 +58,8 @@ export interface TranscriptSnapshot {
   lastLocalCommandAt?: Date;
   /** Name of that command (`/compact`), from the command line before it. */
   lastLocalCommandName?: string;
+  /** That output was an error (stderr) or a cancellation ("Compaction canceled."). */
+  lastLocalCommandFailed?: boolean;
   lastAssistantMessage?: string;
   lastAssistantMessageAt?: Date;
   currentToolName?: string;
@@ -278,10 +280,12 @@ function isLocalCommandOutput(raw: string): boolean {
  *  it carries one, else from the command line before it, which set the
  *  preview to the command name (`/compact`). A command line already answered
  *  by an earlier output does not name a second one. */
-function noteLocalCommandOutput(snap: TranscriptSnapshot, at: Date, name?: string): void {
+function noteLocalCommandOutput(snap: TranscriptSnapshot, at: Date, name: string | undefined, raw: string): void {
   const answered = !!snap.lastLocalCommandAt && !!snap.lastUserMessageAt
     && snap.lastUserMessageAt <= snap.lastLocalCommandAt;
   snap.lastLocalCommandAt = at;
+  snap.lastLocalCommandFailed = raw.includes('<local-command-stderr>')
+    || /<local-command-stdout>[^<]*\bcancell?ed\b/i.test(raw);
   snap.lastLocalCommandName = name ?? (answered ? undefined : snap.lastUserMessage?.match(/^\/\S+/)?.[0]);
 }
 
@@ -722,7 +726,7 @@ export function reduceClaudeTranscriptLine(state: TailState, line: string): bool
     if (type === 'system' && evt.subtype === 'local_command' && evt.isSidechain !== true) {
       const content = typeof evt.content === 'string' ? evt.content : '';
       if (typeof evt.timestamp !== 'string' || !isLocalCommandOutput(content)) return false;
-      noteLocalCommandOutput(state.snapshot, new Date(evt.timestamp), unwrapLocalCommand(content).commandName);
+      noteLocalCommandOutput(state.snapshot, new Date(evt.timestamp), unwrapLocalCommand(content).commandName, content);
       return true;
     }
     if (type !== 'user' && type !== 'assistant') return false;
@@ -783,12 +787,12 @@ export function reduceClaudeTranscriptLine(state: TailState, line: string): bool
             if (ts) snap.lastUserMessageAt = ts;
             snap.messageCount++;
             snap.turn = emptyTurnEvidence();
-            if (localOutput && ts) noteLocalCommandOutput(snap, ts, u.commandName);
+            if (localOutput && ts) noteLocalCommandOutput(snap, ts, u.commandName, rawText);
             return true;
           }
         }
         if (localOutput) {
-          if (ts) noteLocalCommandOutput(snap, ts, u.commandName);
+          if (ts) noteLocalCommandOutput(snap, ts, u.commandName, rawText);
           return true;
         }
       }

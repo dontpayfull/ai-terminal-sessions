@@ -749,7 +749,8 @@ export class ClaudeTracker {
             // otherwise erase the mark right away. The hooks may have been
             // quiet for long before a compaction, so their silence is no
             // reason to stop waiting; 10s without that start is.
-            if (t.lastLocalCommandName === '/compact') {
+            // A cancelled or failed compaction finished nothing.
+            if (t.lastLocalCommandName === '/compact' && !t.lastLocalCommandFailed) {
               const startSeen = hookAtOrAfter(snap.lastStartAt?.getTime(), localCommandAt);
               const age = Date.now() - localCommandAt;
               if (this.compactNoted.get(tmuxSession) !== localCommandAt
