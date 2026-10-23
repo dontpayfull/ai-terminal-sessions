@@ -576,3 +576,21 @@ test('Claude reduceClaudeTranscriptLine marks a cancelled compaction as failed',
   }));
   assert.equal(state.snapshot.lastLocalCommandFailed, false);
 });
+
+test('Claude reduceClaudeTranscriptLine does not take a compaction summary for a user prompt', () => {
+  const state = makeTailState(claudeProvider);
+  reduceClaudeTranscriptLine(state, JSON.stringify({
+    type: 'user',
+    message: { role: 'user', content: 'real prompt' },
+    timestamp: '2026-10-19T12:00:00.000Z',
+  }));
+  reduceClaudeTranscriptLine(state, JSON.stringify({
+    type: 'user',
+    isCompactSummary: true,
+    message: { role: 'user', content: 'This session is being continued from a previous conversation...' },
+    timestamp: '2026-10-19T12:05:00.000Z',
+  }));
+  assert.equal(state.snapshot.lastUserMessage, 'real prompt');
+  assert.equal(state.snapshot.lastUserMessageAt?.toISOString(), '2026-10-19T12:00:00.000Z');
+  assert.equal(state.snapshot.messageCount, 1);
+});

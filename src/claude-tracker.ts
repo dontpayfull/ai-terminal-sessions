@@ -779,6 +779,10 @@ export class ClaudeTracker {
             snap.state = 'idle';
             if (!snap.lastStopAt || (t.lastUserMessageAt && t.lastUserMessageAt > snap.lastStopAt)) {
               snap.lastStopAt = t.lastUserMessageAt;
+              // Esc fires no Stop hook: keep the interrupt as the hooks' last
+              // stop, or the prompt before it would read as a turn still in
+              // flight and keep a later /model or /clear spinning.
+              if (snap.lastStopAt && (!raw.lastStopAt || raw.lastStopAt < snap.lastStopAt)) raw.lastStopAt = snap.lastStopAt;
             }
           } else if (tu > 0 && tu > ta) {
             // User message is the most recent activity. Two distinct shapes:

@@ -780,7 +780,8 @@ export function reduceClaudeTranscriptLine(state: TailState, line: string): bool
         // become the preview or inflate messageCount. And a slash-command turn
         // records its text inside a `<local-command-*>` wrapper, so unwrap it on
         // the FULL text (before truncation) to the typed message or command name.
-        if (evt.isMeta !== true) {
+        // The summary a compaction writes is not something the user typed.
+        if (evt.isMeta !== true && evt.isCompactSummary !== true) {
           const clean = u.text ?? u.commandName;
           if (clean) {
             snap.lastUserMessage = compactPreview(clean);

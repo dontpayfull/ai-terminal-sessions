@@ -552,7 +552,8 @@ export class SessionIndex {
       // The snapshot leaves the group/fork links behind: the group may be gone
       // by restore time (a dead groupId would hide the row), and the branch set
       // was just dissolved above.
-      const { groupId: _g, branchSetId: _b, sortOrder: _s, ...snap } = meta;
+      // Nor does it keep the parked state: the placeholder dies with the kill.
+      const { groupId: _g, branchSetId: _b, sortOrder: _s, parked: _p, ...snap } = meta;
       const killed = ws.killed ?? [];
       killed.unshift({ name: sessionName, killedAt: new Date().toISOString(), meta: snap });
       ws.killed = killed.slice(0, graveyardCap);

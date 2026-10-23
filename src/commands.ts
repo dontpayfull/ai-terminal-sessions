@@ -2719,6 +2719,7 @@ async function cmdReattachAll(
     if (x.liveTab) liveNames.set(x.liveTab, await resolveTmuxNameForTerminalLive(x.liveTab, index, cfg.sessionPrefix));
   }
   const moveLive = toReattach.length > 0 && (slots.some(x => x.sep)
+    || toReattach.some(e => e.session.stopped)
     || [...liveNames.values()].some(n => n !== undefined && byName.get(n)?.parked));
   for (let i = 0; i < slots.length; i++) {
     const tab = slots[i].liveTab;
@@ -3606,6 +3607,7 @@ async function cmdResumeOtherClaude(
 
   // Find or create the terminal. If session is stopped, we can't resume —
   // the tmux session has no process to attach to. Prompt user to Start first.
+  let opened: vscode.Terminal | undefined;
   if (session.stopped) {
     const choice = await vscode.window.showInformationMessage(
       `Session "${session.label || session.name}" is stopped. Start it first?`,
@@ -3620,12 +3622,14 @@ async function cmdResumeOtherClaude(
     const exists = await tmux.hasSession(tmuxPath, session.name);
     if (!exists) await tmux.createDetachedSession(tmuxPath, session.name, cwd);
     index.setSessionStopped(session.workspaceHash, session.name, false);
-    await openTerminalForSession(session.name, cwd, index, true);
+    opened = await openTerminalForSession(session.name, cwd, index, true);
     await sleep(SHELL_INIT_DELAY_MS);
     refreshSidebar();
   }
 
-  const term = findTerminalForSession(session.name);
+  // The tab just opened (an unparked one included) is the one to type into;
+  // a lookup by name could land on another workspace's tab.
+  const term = opened ?? findTerminalForSession(session.name);
   if (!term) {
     vscode.window.showWarningMessage(
       `Couldn't find an attached terminal for "${session.label || session.name}". Click the session to attach, then try Resume again.`,
@@ -4323,7 +4327,9 @@ async function cmdRename(
   const tab = renameTracker?.terminalFor(tmuxName) ?? findTerminalForSession(tmuxName);
   if (tab) {
     const wsLabel = index.getWorkspace(hash)?.label ?? item.session.workspaceLabel;
-    await retitleTab(tab, defaultTermName(wsLabel, item.session.tabId, label));
+    // A parked tab keeps its ⏸.
+    const parkedNow = Boolean(index.getSessionMeta(hash, tmuxName)?.stopped && index.getSessionMeta(hash, tmuxName)?.parked);
+    await retitleTab(tab, (parkedNow ? PARKED_PREFIX : '') + defaultTermName(wsLabel, item.session.tabId, label));
   }
   // A newer rename may have come in while the tab was being retitled.
   if (label) await offerConversationRename(index, registry, claudeTracker, hash, tmuxName, label, gen);
