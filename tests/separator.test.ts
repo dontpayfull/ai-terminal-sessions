@@ -20,9 +20,19 @@ test('isSeparator rejects a tmux session tab and a tab with no known process', a
 });
 
 test('isSeparator recognizes a reload-restored separator by its process', async () => {
-  const child = spawn('sleep', ['2147483647'], { stdio: 'ignore' });
+  const script = "trap '' INT; while :; do sleep 2147483647; done";
+  const child = spawn('/bin/sh', ['-c', script, 'terminal-sessions-separator', '── x ──'], { stdio: 'ignore', detached: true });
   try {
     assert.equal(await isSeparator(fakeTerminal({}, child.pid)), true);
+  } finally {
+    process.kill(-child.pid!, 'SIGKILL');
+  }
+});
+
+test('isSeparator does not claim an ordinary long sleep', async () => {
+  const child = spawn('sleep', ['2147483647'], { stdio: 'ignore' });
+  try {
+    assert.equal(await isSeparator(fakeTerminal({}, child.pid)), false);
   } finally {
     child.kill();
   }

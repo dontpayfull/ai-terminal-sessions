@@ -494,3 +494,58 @@ test('OpenCode reduceOpencodeTranscriptLine processes sessions, subagents, token
   // Malformed line returns false without throwing
   assert.equal(reduceOpencodeTranscriptLine(state, '{invalid'), false);
 });
+
+test('Claude reduceClaudeTranscriptLine ignores a prompt that only quotes the output tag', () => {
+  const state = makeTailState(claudeProvider);
+  reduceClaudeTranscriptLine(state, JSON.stringify({
+    type: 'user',
+    message: { role: 'user', content: 'Explain the <local-command-stdout>x</local-command-stdout> tag' },
+    timestamp: '2026-10-19T12:00:00.000Z',
+  }));
+  assert.equal(state.snapshot.lastLocalCommandAt === undefined, true);
+  // A system record without the output wrapper is not a command's output either.
+  reduceClaudeTranscriptLine(state, JSON.stringify({
+    type: 'system', subtype: 'local_command', content: '<command-name>/model</command-name>',
+    timestamp: '2026-10-19T12:00:01.000Z',
+  }));
+  assert.equal(state.snapshot.lastLocalCommandAt === undefined, true);
+});
+
+test('Claude reduceClaudeTranscriptLine names a combined command+output record by its own command', () => {
+  const state = makeTailState(claudeProvider);
+  reduceClaudeTranscriptLine(state, JSON.stringify({
+    type: 'user',
+    message: { role: 'user', content: '<command-name>/compact</command-name>' },
+    timestamp: '2026-10-19T12:00:00.000Z',
+  }));
+  reduceClaudeTranscriptLine(state, JSON.stringify({
+    type: 'user',
+    message: { role: 'user', content: '<command-name>/model</command-name><local-command-stdout>Set model</local-command-stdout>' },
+    timestamp: '2026-10-19T12:01:00.000Z',
+  }));
+  assert.equal(state.snapshot.lastLocalCommandName, '/model');
+  assert.equal(state.snapshot.lastLocalCommandAt?.toISOString(), '2026-10-19T12:01:00.000Z');
+});
+
+test('Claude reduceClaudeTranscriptLine treats stderr output as a finished local command', () => {
+  const state = makeTailState(claudeProvider);
+  reduceClaudeTranscriptLine(state, JSON.stringify({
+    type: 'user',
+    message: { role: 'user', content: '<command-name>/model</command-name>' },
+    timestamp: '2026-10-19T12:00:00.000Z',
+  }));
+  reduceClaudeTranscriptLine(state, JSON.stringify({
+    type: 'user',
+    message: { role: 'user', content: '<local-command-stderr>Unknown model</local-command-stderr>' },
+    timestamp: '2026-10-19T12:00:01.000Z',
+  }));
+  assert.equal(state.snapshot.lastUserMessage, '/model');
+  assert.equal(state.snapshot.lastLocalCommandName, '/model');
+  // A second output with no command line of its own is not a second `/model`.
+  reduceClaudeTranscriptLine(state, JSON.stringify({
+    type: 'user',
+    message: { role: 'user', content: '<local-command-stdout>later</local-command-stdout>' },
+    timestamp: '2026-10-19T12:00:05.000Z',
+  }));
+  assert.equal(state.snapshot.lastLocalCommandName, undefined);
+});

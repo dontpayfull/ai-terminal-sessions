@@ -268,6 +268,30 @@ the row in the Terminal Sessions view), **View Conversation** and the two
 **Copy Last Conversation** entries, so you can grab a conversation id straight
 from where you are typing.
 
+### Separators in the tab list
+
+A long tab list reads better in sections. Pick **Separator** from the `+ ∨`
+dropdown, type a name (or leave it empty for a plain line) and drag the new
+tab where the section starts.
+
+```
+ my-app #3
+ ── Research ──          ← separator tab
+ my-app - Pricing #7
+ my-app - Competitors #9
+ ── Ops ──
+ infra - Deploy #12
+```
+
+- Clicking a separator does not leave you on an empty screen: focus goes
+  straight back to the tab you were on
+- Rename, recolour or close it like any tab; closing removes it
+- It is a real tab running an idle shell (about 2 MB, no CPU, no tmux), so
+  the panel keeps it in place across a window reload. Ctrl+C and typing
+  inside it do nothing
+- Separators never appear in the sidebar and never get agent state
+- macOS, Linux, WSL and Remote-SSH (it needs a POSIX shell)
+
 ### One Rename
 
 **Rename…** on the sidebar row and VS Code's own **Rename…** on the tab do
@@ -373,6 +397,7 @@ Three moving pieces, each independent, composed to give you a persistent and obs
 
 ### UI integration
 - **Terminal Profile "Persistent Session"** — available in the `+ ∨` dropdown; can be set as default so every new terminal auto-wraps in tmux
+- **Terminal Profile "Separator"**: a named divider tab for the terminal tab list, dragged into place like any tab. Clicking it returns focus to the tab you were on; it survives a window reload in place. See [Separators in the tab list](#separators-in-the-tab-list)
 - **Sidebar tree view** — grouped by workspace, with status indicators (attached vs detached) and relative timestamps. Lives **under the Explorer** by default; drag it (or right-click its header → *Move View*) to your own Activity Bar icon, the panel, or the secondary sidebar
 - **Rich hover tooltip** — hovering a session row shows its tmux ID, workspace, the actual **start folder (cwd)** for subfolder sessions, created/last-attached times, and — while an agent is active — the live **Conversation ID**, model, API-equivalent cost, context %, token totals, and the last user/assistant messages
 - **Sidebar badge** — a red numeric badge appears on the view's host icon (the Explorer, or wherever you've placed the view) when Claude sessions need attention. `waiting` count takes priority (user permission pending), falls back to `working` count. Tooltip explains which is which
@@ -504,6 +529,7 @@ Two extra link detectors on top of VS Code's built-in one. Both read the **rende
 ### Unread results & turn outcome
 - **Unread marker** — an agent that finishes while you're on another tab keeps a verdict on its row until you focus that terminal: teal filled check = done, red `✗ failed` / `✗ tests failed` / `⏳ rate limited`, amber `? asked you`. Persisted across window reloads; the activity-bar badge counts unread sessions. Toggle with `terminalSessions.unreadBadges`
 - **Outcome from the transcript, no LLM** — per-turn tool-result evidence (Claude `is_error`, `N failed`, `FAIL`, `npm ERR!`, `error TSxxxx`, rate-limit messages) classifies how the turn ended; idle rows show `idle 3m · ✗ tests failed` and the tooltip shows the decisive line. A bare non-zero exit is not evidence on its own (a `grep` that finds nothing exits 1), and declining a permission prompt is your decision, not a failed turn. The verdict stays in the sidebar: notifications only say done or needs you
+- **Local slash commands settle at once**: `/clear`, `/model`, `/effort` and other commands Claude Code runs itself get no reply, so the row goes straight back to idle when the command prints its output, with no spinner and no done mark. A manual `/compact` is real work (a minute or two of summarizing), so its end marks the row done and sends the done notification, like a finished turn
 - **Mark as Seen** — right-click a waiting, unread or still-coloured row (bulk OK), or the terminal tab itself. The row's verdict and the tab's green or red leave at once, under either clear mode (on focus or after the timer); the session stays in place. A dismissed waiting row shows as idle until the agent does anything new. Palette: `Terminal Sessions: Mark All Sessions as Seen`
 
 ### Notifications

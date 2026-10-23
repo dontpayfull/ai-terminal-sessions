@@ -250,7 +250,8 @@ export interface TranscriptSummary {
 function unwrapLocalCommand(raw: string): { text?: string; commandName?: string } {
   if (!raw.includes('<local-command-caveat>')
     && !raw.includes('<command-name>')
-    && !raw.includes('<local-command-stdout>')) {
+    && !raw.includes('<local-command-stdout>')
+    && !raw.includes('<local-command-stderr>')) {
     return { text: raw };
   }
   const m = raw.match(/<command-name>\s*([^<]+?)\s*<\/command-name>/);
@@ -261,15 +262,27 @@ function unwrapLocalCommand(raw: string): { text?: string; commandName?: string 
     .replace(/<command-message>[\s\S]*?<\/command-message>/g, '')
     .replace(/<command-args>[\s\S]*?<\/command-args>/g, '')
     .replace(/<local-command-stdout>[\s\S]*?<\/local-command-stdout>/g, '')
+    .replace(/<local-command-stderr>[\s\S]*?<\/local-command-stderr>/g, '')
     .trim();
   return { text: stripped || undefined, commandName };
 }
 
-/** A local command's output follows its command line, which already set the
- *  preview to the command name (`/compact`), so read the name from there. */
-function noteLocalCommandOutput(snap: TranscriptSnapshot, at: Date): void {
+/** A local command's output record: the `<local-command-stdout>` wrapper and
+ *  nothing typed around it. A prompt that merely quotes the tag is not one. */
+function isLocalCommandOutput(raw: string): boolean {
+  return (raw.includes('<local-command-stdout>') || raw.includes('<local-command-stderr>'))
+    && unwrapLocalCommand(raw).text === undefined;
+}
+
+/** Record a local command's output. The name comes from the record itself when
+ *  it carries one, else from the command line before it, which set the
+ *  preview to the command name (`/compact`). A command line already answered
+ *  by an earlier output does not name a second one. */
+function noteLocalCommandOutput(snap: TranscriptSnapshot, at: Date, name?: string): void {
+  const answered = !!snap.lastLocalCommandAt && !!snap.lastUserMessageAt
+    && snap.lastUserMessageAt <= snap.lastLocalCommandAt;
   snap.lastLocalCommandAt = at;
-  snap.lastLocalCommandName = snap.lastUserMessage?.match(/^\/\S+/)?.[0];
+  snap.lastLocalCommandName = name ?? (answered ? undefined : snap.lastUserMessage?.match(/^\/\S+/)?.[0]);
 }
 
 /** Sidecar Claude writes on `/rename` and reads back for `claude --resume`:
@@ -707,8 +720,9 @@ export function reduceClaudeTranscriptLine(state: TailState, line: string): bool
     // A local slash command logs its output as a `system` local_command record
     // (`/clear`) or as a `<local-command-stdout>` user record (handled below).
     if (type === 'system' && evt.subtype === 'local_command' && evt.isSidechain !== true) {
-      if (typeof evt.timestamp !== 'string') return false;
-      noteLocalCommandOutput(state.snapshot, new Date(evt.timestamp));
+      const content = typeof evt.content === 'string' ? evt.content : '';
+      if (typeof evt.timestamp !== 'string' || !isLocalCommandOutput(content)) return false;
+      noteLocalCommandOutput(state.snapshot, new Date(evt.timestamp), unwrapLocalCommand(content).commandName);
       return true;
     }
     if (type !== 'user' && type !== 'assistant') return false;
@@ -755,25 +769,28 @@ export function reduceClaudeTranscriptLine(state: TailState, line: string): bool
           if (sa) sa.lastMessage = compactPreview(rawText);
           return true;
         }
-        const localOutput = rawText.includes('<local-command-stdout>');
-        if (localOutput && ts) noteLocalCommandOutput(snap, ts);
+        const u = unwrapLocalCommand(rawText);
+        const localOutput = !isSidechain && isLocalCommandOutput(rawText);
         // Meta records (isMeta:true — local-command caveats, hook /
         // system-reminder injections) aren't real user turns, so they must not
         // become the preview or inflate messageCount. And a slash-command turn
         // records its text inside a `<local-command-*>` wrapper, so unwrap it on
         // the FULL text (before truncation) to the typed message or command name.
         if (evt.isMeta !== true) {
-          const u = unwrapLocalCommand(rawText);
           const clean = u.text ?? u.commandName;
           if (clean) {
             snap.lastUserMessage = compactPreview(clean);
             if (ts) snap.lastUserMessageAt = ts;
             snap.messageCount++;
             snap.turn = emptyTurnEvidence();
+            if (localOutput && ts) noteLocalCommandOutput(snap, ts, u.commandName);
             return true;
           }
         }
-        if (localOutput) return true;
+        if (localOutput) {
+          if (ts) noteLocalCommandOutput(snap, ts, u.commandName);
+          return true;
+        }
       }
       // tool_result — clear pending tool use (best effort, main thread only)
       if (!belongsTo) {

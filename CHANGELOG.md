@@ -4,6 +4,17 @@ All notable changes to the Terminal Sessions extension.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project uses semantic versioning once past 1.0.0.
 
+## [Unreleased]
+
+### Added
+- **Separator tabs.** Pick **Separator** from the `+ ∨` dropdown to add a named divider to the terminal tab list and drag it where a section starts. Clicking it sends focus back to the tab you were on. It is an idle shell (about 2 MB, no CPU, no tmux), so the panel keeps it in place across a window reload, and Ctrl+C or typing inside it does nothing.
+
+### Changed
+- **A finished `/compact` marks the session done.** The row and the tab turn green and the done notification fires, as after a finished turn.
+
+### Fixed
+- **Spinner stuck after `/clear`, `/model` and other local slash commands.** The command line was read as a prompt waiting for a reply, so the row and the tab kept spinning for up to 5 minutes. The session now goes straight back to idle once the command prints its output, without a done mark.
+
 ## [0.35.1] — 2026-10-15
 
 ### Added
