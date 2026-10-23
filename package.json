@@ -1852,6 +1852,11 @@
           "id": "terminalSessions.persistent",
           "title": "Persistent Session",
           "icon": "terminal-bash"
+        },
+        {
+          "id": "terminalSessions.separator",
+          "title": "Separator",
+          "icon": "dash"
         }
       ]
     },

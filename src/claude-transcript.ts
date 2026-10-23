@@ -52,6 +52,12 @@ export interface TranscriptSnapshot {
   model?: string;
   lastUserMessage?: string;
   lastUserMessageAt?: Date;
+  /** When a slash command Claude Code runs itself (`/clear`, `/compact`,
+   *  `/model`…) logged its output. Such a command gets no assistant reply, so
+   *  a user line not newer than this is not a pending prompt. */
+  lastLocalCommandAt?: Date;
+  /** Name of that command (`/compact`), from the command line before it. */
+  lastLocalCommandName?: string;
   lastAssistantMessage?: string;
   lastAssistantMessageAt?: Date;
   currentToolName?: string;
@@ -257,6 +263,13 @@ function unwrapLocalCommand(raw: string): { text?: string; commandName?: string 
     .replace(/<local-command-stdout>[\s\S]*?<\/local-command-stdout>/g, '')
     .trim();
   return { text: stripped || undefined, commandName };
+}
+
+/** A local command's output follows its command line, which already set the
+ *  preview to the command name (`/compact`), so read the name from there. */
+function noteLocalCommandOutput(snap: TranscriptSnapshot, at: Date): void {
+  snap.lastLocalCommandAt = at;
+  snap.lastLocalCommandName = snap.lastUserMessage?.match(/^\/\S+/)?.[0];
 }
 
 /** Sidecar Claude writes on `/rename` and reads back for `claude --resume`:
@@ -691,6 +704,13 @@ export function reduceClaudeTranscriptLine(state: TailState, line: string): bool
     try { evt = JSON.parse(line); }
     catch { return false; }
     const type = typeof evt.type === 'string' ? evt.type : '';
+    // A local slash command logs its output as a `system` local_command record
+    // (`/clear`) or as a `<local-command-stdout>` user record (handled below).
+    if (type === 'system' && evt.subtype === 'local_command' && evt.isSidechain !== true) {
+      if (typeof evt.timestamp !== 'string') return false;
+      noteLocalCommandOutput(state.snapshot, new Date(evt.timestamp));
+      return true;
+    }
     if (type !== 'user' && type !== 'assistant') return false;
 
     const msg = evt.message as {
@@ -735,6 +755,8 @@ export function reduceClaudeTranscriptLine(state: TailState, line: string): bool
           if (sa) sa.lastMessage = compactPreview(rawText);
           return true;
         }
+        const localOutput = rawText.includes('<local-command-stdout>');
+        if (localOutput && ts) noteLocalCommandOutput(snap, ts);
         // Meta records (isMeta:true — local-command caveats, hook /
         // system-reminder injections) aren't real user turns, so they must not
         // become the preview or inflate messageCount. And a slash-command turn
@@ -751,6 +773,7 @@ export function reduceClaudeTranscriptLine(state: TailState, line: string): bool
             return true;
           }
         }
+        if (localOutput) return true;
       }
       // tool_result — clear pending tool use (best effort, main thread only)
       if (!belongsTo) {

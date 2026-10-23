@@ -158,6 +158,54 @@ test('Claude reduceClaudeTranscriptLine updates messages, usage, cost, context, 
   assert.equal(reduceClaudeTranscriptLine(state, '{invalid-json'), false);
 });
 
+test('Claude reduceClaudeTranscriptLine records when a local slash command logged its output', () => {
+  // `/clear`: the output lands in a system local_command record.
+  const clear = makeTailState(claudeProvider);
+  reduceClaudeTranscriptLine(clear, JSON.stringify({
+    type: 'user',
+    message: { role: 'user', content: '<command-name>/clear</command-name>\n<command-message>clear</command-message>\n<command-args></command-args>' },
+    timestamp: '2026-10-19T11:37:46.737Z',
+  }));
+  assert.equal(clear.snapshot.lastUserMessage, '/clear');
+  assert.equal(clear.snapshot.lastLocalCommandAt === undefined, true);
+  const changed = reduceClaudeTranscriptLine(clear, JSON.stringify({
+    type: 'system',
+    subtype: 'local_command',
+    content: '<local-command-stdout></local-command-stdout>',
+    timestamp: '2026-10-19T11:37:46.964Z',
+  }));
+  assert.equal(changed, true);
+  assert.equal(clear.snapshot.lastLocalCommandAt?.toISOString(), '2026-10-19T11:37:46.964Z');
+  assert.ok(clear.snapshot.lastLocalCommandAt! >= clear.snapshot.lastUserMessageAt!);
+  assert.equal(clear.snapshot.lastLocalCommandName, '/clear');
+
+  // `/compact`, `/model`: the output lands in a user record, which must not
+  // count as a new prompt or replace the preview.
+  const model = makeTailState(claudeProvider);
+  reduceClaudeTranscriptLine(model, JSON.stringify({
+    type: 'user',
+    message: { role: 'user', content: '<command-name>/model</command-name>' },
+    timestamp: '2026-10-19T11:38:19.758Z',
+  }));
+  reduceClaudeTranscriptLine(model, JSON.stringify({
+    type: 'user',
+    message: { role: 'user', content: '<local-command-stdout>Set model to opus</local-command-stdout>' },
+    timestamp: '2026-10-19T11:38:20.100Z',
+  }));
+  assert.equal(model.snapshot.lastUserMessage, '/model');
+  assert.equal(model.snapshot.messageCount, 1);
+  assert.equal(model.snapshot.lastLocalCommandAt?.toISOString(), '2026-10-19T11:38:20.100Z');
+  assert.equal(model.snapshot.lastLocalCommandName, '/model');
+
+  // A real prompt after the command is newer than the command output.
+  reduceClaudeTranscriptLine(model, JSON.stringify({
+    type: 'user',
+    message: { role: 'user', content: 'next question' },
+    timestamp: '2026-10-19T11:39:00.000Z',
+  }));
+  assert.ok(model.snapshot.lastUserMessageAt! > model.snapshot.lastLocalCommandAt!);
+});
+
 // ───────────────────────────── Codex Tests ─────────────────────────────
 
 test('Codex readCodexTranscriptSummary extracts fields and cwd from rollout fixture', () => {

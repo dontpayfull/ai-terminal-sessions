@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { SessionIndex } from './session-manager';
 import { registerPersistentProfile } from './profile-provider';
+import { registerSeparators } from './separator';
 import { registerCommands, syncActiveTerminalContext, syncSpecialFolderContexts, wireRenameFlow } from './commands';
 import { registerSidebar, refreshSidebar, revealSessionInSidebar } from './sidebar/tree-provider';
 import { StatusBar } from './status-bar';
@@ -56,6 +57,7 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   void searchIndex.load().then(() => searchIndex.refresh());
 
   ctx.subscriptions.push(registerPersistentProfile(index));
+  registerSeparators(ctx);
   registerCommands(ctx, index, claudeTracker, searchIndex, registry);
   // Seed the tab-menu Kill ↔ locked-hint gate for whatever terminal is active
   // at startup (the key is falsy/Kill-shown until the first terminal switch).

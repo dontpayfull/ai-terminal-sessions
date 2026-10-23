@@ -274,6 +274,9 @@ export class ClaudeTracker {
   /** Last DERIVED state per tmux session, so getSnapshot can spot the
    *  working→idle edge even when no Stop hook fired (transcript-only idle). */
   private lastDerived = new Map<string, ClaudeState>();
+  /** tmux → output time of the last manual `/compact` already reported as a
+   *  finish, so each compaction turns the row green once. */
+  private compactNoted = new Map<string, number>();
   /** tmux → Date.now() when the user dismissed a waiting/unread row. A waiting
    *  state whose activity is older than this renders as idle. */
   private dismissedAt = new Map<string, number>();
@@ -418,6 +421,7 @@ export class ClaudeTracker {
     this.lastWaitingNotifyPerSession.delete(tmuxSession);
     this.flagCapTried.delete(tmuxSession);
     this.lastDerived.delete(tmuxSession);
+    this.compactNoted.delete(tmuxSession);
     this.dismissedAt.delete(tmuxSession);
     this.pendingFinish.delete(tmuxSession);
     // Stop tailing the transcript so a killed session stops doing 3s stat/parse
@@ -715,8 +719,40 @@ export class ClaudeTracker {
           snap.toolSince = undefined;
         }
 
+        // A slash command Claude Code ran itself (`/clear`, `/compact`,
+        // `/model`…) is the newest user line but gets no assistant reply.
+        // Once its output is logged nothing is pending: plain idle, and no
+        // lastStopAt so the row does not turn green.
+        const localCommandAt = t.lastLocalCommandAt?.getTime() ?? 0;
+        const localCommandDone = tu > ta && localCommandAt >= tu;
+
         if (snap.state !== 'tool' && (snap.state !== 'waiting' || waitingIsStale)) {
-          if (interruptMarker) {
+          if (localCommandDone) {
+            snap.state = 'idle';
+            // Except a manual `/compact`: a minute or two of real work, so its
+            // end paints the row green and notifies like a finished turn. Once
+            // per command, only a live one (not replayed at activation), and
+            // only after the SessionStart that closes the compaction, whose
+            // markSeen would otherwise erase the mark right away.
+            if (t.lastLocalCommandName === '/compact') {
+              const startSeen = hookAtOrAfter(snap.lastStartAt?.getTime(), localCommandAt);
+              const age = Date.now() - localCommandAt;
+              if (this.compactNoted.get(tmuxSession) !== localCommandAt && age < 120_000
+                  && (startSeen || !hooksLive || age > 10_000)) {
+                this.compactNoted.set(tmuxSession, localCommandAt);
+                // Already reported here: the working→idle edge below must not repeat it.
+                this.lastDerived.set(tmuxSession, 'idle');
+                this.noteFinished(tmuxSession, undefined);
+                this.triggerStopNotify(
+                  tmuxSession,
+                  this.map.get(tmuxSession)?.cwd,
+                  localCommandAt,
+                  this.registry.providerForAgent(snap.agent),
+                );
+              }
+              if (this.compactNoted.get(tmuxSession) === localCommandAt) snap.lastStopAt = t.lastLocalCommandAt;
+            }
+          } else if (interruptMarker) {
             snap.state = 'idle';
             if (!snap.lastStopAt || (t.lastUserMessageAt && t.lastUserMessageAt > snap.lastStopAt)) {
               snap.lastStopAt = t.lastUserMessageAt;

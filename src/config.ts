@@ -166,6 +166,7 @@ export async function setFilterMode(mode: SidebarFilterMode): Promise<void> {
 }
 
 export const PROFILE_ID = 'terminalSessions.persistent';
+export const SEPARATOR_PROFILE_ID = 'terminalSessions.separator';
 export const VIEW_ID = 'terminalSessions.sessions';
 export const STOPPED_URI_SCHEME = 'terminal-sessions-stopped';
 // resourceUri scheme for fork branch-set members. The BranchSetDecorationProvider
