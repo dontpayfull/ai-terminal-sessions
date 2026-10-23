@@ -35,8 +35,10 @@ export class StatusBar {
     }
     try {
       const sessions = await enrichSessions(tmuxPath, cfg.sessionPrefix, this.index);
-      const active = sessions.filter(s => s.attached).length;
-      const detached = sessions.length - active;
+      // A parked tab is attached but stopped: neither count.
+      const running = sessions.filter(s => !s.stopped);
+      const active = running.filter(s => s.attached).length;
+      const detached = running.length - active;
       this.item.text = `$(terminal-bash) ts: ${active}▶ ${detached}⇄`;
       const tooltip = new vscode.MarkdownString();
       tooltip.supportThemeIcons = true;

@@ -5,9 +5,9 @@ import * as vscode from 'vscode';
 import { COMMAND, getConfig, setSortMode, setFilterMode, SidebarSortMode, SidebarFilterMode, SORT_MODES, NativeNotifMode, MAX_CLEAR_MINUTES, clampClearMinutes } from './config';
 import * as tmux from './tmux';
 import { SessionIndex, enrichSessions } from './session-manager';
-import { openTerminalForSession, findTerminalForSession, metaIconAndColor, sessionNameForTerminal, resolveTmuxNameForTerminalLive, nextSafeTabId, PARKED_PREFIX, setTabRetitler } from './profile-provider';
+import { openTerminalForSession, findTerminalForSession, findVerifiedTabForSession, metaIconAndColor, sessionNameForTerminal, resolveTmuxNameForTerminalLive, nextSafeTabId, PARKED_PREFIX, setTabRetitler } from './profile-provider';
 import { currentWorkspace, hashPath, sessionName as buildSessionName, parseSessionName } from './workspace-id';
-import { SessionTreeItem, SubagentTreeItem, GroupTreeItem, WorkspaceTreeItem, KilledSessionItem } from './sidebar/items';
+import { SessionTreeItem, SubagentTreeItem, GroupTreeItem, WorkspaceTreeItem, KilledSessionItem, SessionsFolderItem } from './sidebar/items';
 import { refreshSidebar, collapseAllSessions, revealSessionInSidebar, setSidebarTextFilter, getSidebarTextFilter } from './sidebar/tree-provider';
 import { SessionInfo } from './types';
 import { humanAge, sleep } from './util';
@@ -1612,8 +1612,8 @@ async function resolveSessionInfoFromInvocation(
     favorite: meta?.favorite,
     locked: meta?.locked,
     // A tab is a live session, unless it is a parked one.
-    stopped: Boolean(meta?.stopped && meta?.keepTab),
-    parked: Boolean(meta?.stopped && meta?.keepTab),
+    stopped: Boolean(meta?.stopped && meta?.parked),
+    parked: Boolean(meta?.stopped && meta?.parked),
     keepTab: meta?.keepTab,
     groupId: meta?.groupId,
     branchSetId: meta?.branchSetId,
@@ -1862,17 +1862,30 @@ async function cmdRestartAll(
   let skippedStopped = 0;
   let unresolved = 0;
   const targets: Array<{ name: string; tab: vscode.Terminal }> = [];
+  // Panel order. Each restarted tab lands at the end of the list, so the
+  // separators and parked tabs between them are recreated in their turn too,
+  // or they would all drift to the front and the sections would mix.
+  const slots: Array<{ target?: { name: string; tab: vscode.Terminal }; sep?: string; parked?: string; tab: vscode.Terminal }> = [];
   const queued = new Set<string>();
   for (const term of vscode.window.terminals) {
+    const sepLabel = separatorLabel(term.name);
+    if (sepLabel !== undefined) { slots.push({ sep: sepLabel, tab: term }); continue; }
     // eslint-disable-next-line no-await-in-loop
     const name = await resolveTmuxNameForTerminalLive(term, index, cfg.sessionPrefix);
     const s = name ? byName.get(name) : undefined;
     if (!name || !s) { unresolved++; continue; }
-    if (s.stopped) { skippedStopped++; continue; }
     if (queued.has(name)) continue;
+    if (s.stopped) {
+      skippedStopped++;
+      if (s.parked && !term.exitStatus) { queued.add(name); slots.push({ parked: name, tab: term }); }
+      continue;
+    }
     queued.add(name);
-    targets.push({ name, tab: term });
+    const target = { name, tab: term };
+    targets.push(target);
+    slots.push({ target, tab: term });
   }
+  while (slots.length > 0 && !slots[0].target) slots.shift();
 
   if (targets.length === 0) {
     const parts: string[] = ['No session terminals to restart.'];
@@ -1901,8 +1914,22 @@ async function cmdRestartAll(
     title: 'Restarting sessions',
     cancellable: true,
   }, async (progress, token) => {
-    for (const [i, { name, tab }] of targets.entries()) {
+    let i = -1;
+    for (const slot of slots) {
       if (token.isCancellationRequested) break;
+      if (!slot.target) {
+        // A separator or a parked tab: same tab again, at the end.
+        try {
+          // eslint-disable-next-line no-await-in-loop
+          await disposeAndWait(slot.tab, 500);
+          if (slot.sep !== undefined) openSeparator(slot.sep);
+          // eslint-disable-next-line no-await-in-loop
+          else if (slot.parked) await openTerminalForSession(slot.parked, undefined, index, true);
+        } catch (e) { console.error('[terminal-sessions] restart all: keeping tab order failed:', e); }
+        continue;
+      }
+      i++;
+      const { name, tab } = slot.target;
       // Resolve one at a time: the previous relaunch has reserved its
       // conversation by now, so siblings sharing a history head each get
       // their own conversation instead of the same one.
@@ -2292,11 +2319,14 @@ async function cmdStop(
   // Keep Tab When Stopped: park the session instead of ending it, so the tab
   // attached to it stays where it is (greyed, ⏸ in front of its name).
   const asTab = item && typeof (item as vscode.Terminal).sendText === 'function' ? item as vscode.Terminal : undefined;
-  const keptTab = stopMeta?.keepTab ? (asTab ?? findTerminalForSession(name)) : undefined;
+  // Only a tab proven to be this session's: a `#<id>` name match could be
+  // another workspace's tab, which would then get the ⏸.
+  const keptTab = stopMeta?.keepTab ? (asTab ?? await findVerifiedTabForSession(name)) : undefined;
   if (keptTab && !keptTab.exitStatus) {
     try {
       await tmux.parkSession(tmuxPath, name, label || name);
       index.setSessionStopped(parsed.hash, name, true);
+      index.setSessionParked(parsed.hash, name, true);
       claudeTracker.forgetSession(name);
       if (!keptTab.name.startsWith(PARKED_PREFIX)) await retitleTab(keptTab, PARKED_PREFIX + keptTab.name);
       void syncActiveTerminalContext(index);
@@ -2362,6 +2392,14 @@ async function cmdStart(
   // Resolve cwd the same way cmdRestart does.
   let startCwd = meta?.folderPath || '';
   if (!startCwd) startCwd = ws.path;
+
+  // Already running (a tab menu offered Start for another tab, a stale row):
+  // just bring its tab up. Starting it again would open a second tab and type
+  // a resume into the live agent.
+  if (!meta?.stopped && await tmux.hasSession(tmuxPath, name)) {
+    await openTerminalForSession(name, startCwd, index);
+    return;
+  }
 
   // Claude session id: prefer the live map (current ownership). If empty,
   // fall back to the historical mapping in the index — set on every hook
@@ -2625,7 +2663,7 @@ async function cmdReattachAll(
   // Panel order, separators included: each recreated tab lands at the end of
   // the list, so a separator among them is recreated in its turn too, or the
   // sections would all collapse to the front.
-  const slots: Array<{ entry?: Entry; sep?: { tab: vscode.Terminal; label: string } }> = [];
+  const slots: Array<{ entry?: Entry; sep?: { tab: vscode.Terminal; label: string }; liveTab?: vscode.Terminal }> = [];
   for (const term of vscode.window.terminals) {
     const sepLabel = separatorLabel(term.name);
     if (sepLabel !== undefined) { slots.push({ sep: { tab: term, label: sepLabel } }); continue; }
@@ -2636,15 +2674,20 @@ async function cmdReattachAll(
     // created this session still has its shellArgs and is genuinely live.
     const restoredDisconnected = !exited && sessionNameForTerminal(term) === undefined;
     const live = !exited && !restoredDisconnected;
-    if (live && !includeLive) { skippedLive++; continue; }
+    // Live tabs stay as they are, unless a separator has to move past them
+    // (decided once the whole panel is known, below).
+    if (live && !includeLive) { slots.push({ liveTab: term }); continue; }
     // eslint-disable-next-line no-await-in-loop
     const name = await resolveTmuxNameForTerminalLive(term, index, cfg.sessionPrefix);
     const s = name ? byName.get(name) : undefined;
     if (!name || !s) { unresolved++; continue; }
-    // A stopped session with Keep Tab When Stopped keeps its place: attached
-    // again to its parked tmux session, or parked anew when tmux is gone
-    // (reboot). Nothing is resumed in it.
-    if (s.stopped && !s.keepTab) { skippedStopped++; continue; }
+    // A parked session keeps its place: attached again to its placeholder, or
+    // parked anew when tmux is gone (reboot) and it was stopped on purpose.
+    // A session that was merely running at shutdown is not parked here: it
+    // stays a stopped row, as before, for Start or the restore offer.
+    const sMeta = index.getSessionMeta(s.workspaceHash, s.name);
+    const keptStopped = s.parked || Boolean(sMeta?.stopped && sMeta?.parked);
+    if (s.stopped && !keptStopped) { skippedStopped++; continue; }
     if (queued.has(name)) continue;
     queued.add(name);
     // Soft reconnect: the tmux session is still alive with its program inside,
@@ -2657,8 +2700,30 @@ async function cmdReattachAll(
     toReattach.push(entry);
     slots.push({ entry });
   }
-  // Separators before the first recreated tab stay where they are.
-  while (slots.length > 0 && slots[0].sep) slots.shift();
+  // Everything before the first recreated tab stays where it is.
+  while (slots.length > 0 && !slots[0].entry) {
+    if (slots.shift()!.liveTab) skippedLive++;
+  }
+  // Recreated tabs land at the end. With a separator among them, a live tab
+  // left behind would end up in the wrong section, so those are reconnected
+  // in their turn too (a soft reconnect: tmux keeps running, nothing resumes).
+  const moveLive = toReattach.length > 0 && slots.some(x => x.sep);
+  for (let i = 0; i < slots.length; i++) {
+    const tab = slots[i].liveTab;
+    if (!tab) continue;
+    // eslint-disable-next-line no-await-in-loop
+    const name = moveLive ? await resolveTmuxNameForTerminalLive(tab, index, cfg.sessionPrefix) : undefined;
+    const s = name ? byName.get(name) : undefined;
+    if (!name || !s || queued.has(name)) {
+      skippedLive++;
+      slots.splice(i--, 1);
+      continue;
+    }
+    queued.add(name);
+    const entry: Entry = { session: s, ghost: tab, softReconnect: true };
+    toReattach.push(entry);
+    slots[i] = { entry };
+  }
 
   if (toReattach.length === 0) {
     const parts: string[] = [includeLive ? 'No session terminals to re-attach.' : 'No ghost terminals to re-attach.'];
@@ -2811,14 +2876,15 @@ async function cmdReattachAll(
  * workspace (or no item) → create at root.
  */
 function resolveContainer(
-  item: WorkspaceTreeItem | GroupTreeItem | undefined,
+  item: WorkspaceTreeItem | GroupTreeItem | SessionsFolderItem | undefined,
 ): { hash: string; parentMasterId?: string } | undefined {
   if (item instanceof GroupTreeItem) {
     // Only masters can hold groups; if the user invoked this on a normal group,
     // create as a sibling at that group's level (its parent master or root).
     return { hash: item.workspaceHash, parentMasterId: item.kind === 'master' ? item.groupId : undefined };
   }
-  if (item instanceof WorkspaceTreeItem) {
+  // The "Sessions" folder holds the workspace root.
+  if (item instanceof WorkspaceTreeItem || item instanceof SessionsFolderItem) {
     return { hash: item.workspaceHash };
   }
   const ws = currentWorkspace();
@@ -2830,7 +2896,7 @@ function resolveContainer(
  * Create a new normal group. At workspace root, or inside a master when
  * right-clicked on one. Empty name aborts.
  */
-async function cmdNewGroup(index: SessionIndex, item?: WorkspaceTreeItem | GroupTreeItem): Promise<void> {
+async function cmdNewGroup(index: SessionIndex, item?: WorkspaceTreeItem | GroupTreeItem | SessionsFolderItem): Promise<void> {
   const ctx = resolveContainer(item);
   if (!ctx) { vscode.window.showErrorMessage('No workspace open — groups need a workspace.'); return; }
   const name = await vscode.window.showInputBox({
@@ -2847,7 +2913,7 @@ async function cmdNewGroup(index: SessionIndex, item?: WorkspaceTreeItem | Group
  * Create a new master group (a "group of groups"). At workspace root, or
  * nested inside another master when right-clicked on one.
  */
-async function cmdNewMasterGroup(index: SessionIndex, item?: WorkspaceTreeItem | GroupTreeItem): Promise<void> {
+async function cmdNewMasterGroup(index: SessionIndex, item?: WorkspaceTreeItem | GroupTreeItem | SessionsFolderItem): Promise<void> {
   const ctx = resolveContainer(item);
   if (!ctx) { vscode.window.showErrorMessage('No workspace open — groups need a workspace.'); return; }
   const name = await vscode.window.showInputBox({
@@ -3256,7 +3322,11 @@ async function cmdResumeFromArchive(
     label: `$(add) Open in new session${preferredLabel ? ` "${preferredLabel}"` : ''} & resume`,
     description: 'Create a new persistent terminal tab with this conversation title',
   });
-  if (active && activeName) {
+  // A parked tab only runs its placeholder: typing a resume there does nothing.
+  const activeParsed = activeName ? parseSessionName(activeName, cfg.sessionPrefix) : undefined;
+  const activeMeta = activeParsed ? index.getSessionMeta(activeParsed.hash, activeName!) : undefined;
+  const activeParked = Boolean(activeMeta?.stopped && activeMeta?.parked);
+  if (active && activeName && !activeParked) {
     actions.push({
       action: 'active',
       label: '$(terminal) Resume inside current active terminal',
@@ -3337,6 +3407,9 @@ async function cmdResumeFromArchive(
     if (!hasTmux) {
       await tmux.createDetachedSession(tmuxPath, linked.sessionName, targetCwd);
     }
+    // A parked session gets a fresh shell when it opens: wait for it like for
+    // a new one before typing the resume.
+    const wasParked = hasTmux && Boolean(index.getSessionMeta(linked.workspaceHash, linked.sessionName)?.parked);
     index.setSessionStopped(linked.workspaceHash, linked.sessionName, false);
     const term = await openTerminalForSession(linked.sessionName, targetCwd, index);
     refreshSidebar();
@@ -3344,7 +3417,7 @@ async function cmdResumeFromArchive(
     if (term) {
       // Only send resume when the chosen conversation isn't already actively running in this pane.
       if (!(hasTmux && agentRunning && snap?.sessionId === s.sessionId)) {
-        if (!existingTerm || !hasTmux) await sleep(SHELL_INIT_DELAY_MS);
+        if (!existingTerm || !hasTmux || wasParked) await sleep(SHELL_INIT_DELAY_MS);
         if (vscode.window.terminals.includes(term)) {
           claudeTracker.reserveResume(s.sessionId, linked.sessionName);
           term.sendText(buildResumeCommand(provider, s.sessionId, s.transcriptPath, targetCwd, flags));

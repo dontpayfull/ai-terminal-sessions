@@ -153,6 +153,8 @@ export interface SessionLabel {
   // Stop parks this session instead of ending it, so its terminal tab stays in
   // place (greyed, ⏸ in front of its name) until Start brings it back.
   keepTab?: boolean;
+  // Its tmux session is parked on that placeholder right now.
+  parked?: boolean;
   // Original cwd the session was created in. Differs from the workspace root
   // when the session was started from a subfolder (right-click → New Persistent
   // in Folder). Persisted so Restart re-creates tmux in the SAME folder, not

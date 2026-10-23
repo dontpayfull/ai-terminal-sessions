@@ -41,13 +41,14 @@ first session.
      │       ▸ Background Sessions
    6 │   ▸ 🕐 Recent Sessions
    7 │   ▸ 🗑 Killed Sessions
-   8 │   ▾ 📁 backend
-   9 │       ⟳ api · migration   working 1m
-  10 │       🔧 web · e2e        Bash 8s · 🤖 2 running
-  11 │       ⚠ worker · queue    waiting input · 🚨
-  12 │       ✓ ✎ docs · rewrite  done 3m
-  13 │       ○ api · scratch     idle 2h
-  14 │       ■ web · old branch  stopped · idle 6d · 🔒
+   8 │   ▾ 📚 Sessions            12⏸ · 1⇄ 5▶
+   9 │     ▾ 📁 backend
+  10 │         ⟳ api · migration   working 1m
+  11 │         🔧 web · e2e        Bash 8s · 🤖 2 running
+  12 │         ⚠ worker · queue    waiting input · 🚨
+  13 │         ✓ ✎ docs · rewrite  done 3m
+  14 │         ○ api · scratch     idle 2h
+  15 │         ■ web · old branch  stopped · idle 6d · 🔒
 ```
 
 1. **Toolbar,** left to right: filter this list as you type, change the
@@ -69,20 +70,26 @@ first session.
 6. **Recent.** A flat list: running sessions first by last activity, then
    stopped ones by when they stopped.
 7. **Killed.** A graveyard. Right-click → *Restore Session* brings one back.
-8. **Your own folder.** Make as many as you like, drag rows in, colour them,
+8. **Sessions.** Every folder and every session of the workspace, below
+   the pinned shortcuts, so the workspace collapses to a handful of rows.
+   Same count badge as the workspace. Drop a row on it to take it out of its
+   folder. `terminalSessions.showSessionsFolder: false` puts the folders
+   back directly under the workspace.
+9. **Your own folder.** Make as many as you like, drag rows in, colour them,
    nest a folder inside another.
-9. **Working.** A spinner and how long this turn has been going.
-10. **Running a tool.** The tool's name replaces the word, and `🤖 2 running`
+10. **Working.** A spinner and how long this turn has been going.
+11. **Running a tool.** The tool's name replaces the word, and `🤖 2 running`
     means two subagents are alive under it.
-11. **Waiting for you.** A warning icon; the session is frozen until you
+12. **Waiting for you.** A warning icon; the session is frozen until you
     answer. `🚨` marks a session launched in auto-approve (YOLO) mode.
-12. **Just finished.** A filled check for a clean turn; the icon becomes an
+13. **Just finished.** A filled check for a clean turn; the icon becomes an
     error mark when it ended badly (`✗ tests failed 2m`) or a question mark
     when the agent asked you something. Once you look, the row goes back to
     the ordinary idle description.
-13. **Detached.** A hollow circle: alive in tmux, no tab open in this window.
-14. **Stopped.** The process is gone, the row and its history stay. `🔒` means
-    locked — Kill is refused until you unlock it.
+14. **Detached.** A hollow circle: alive in tmux, no tab open in this window.
+15. **Stopped.** The process is gone, the row and its history stay. `🔒` means
+    locked — Kill is refused until you unlock it. `stopped · tab kept` means
+    its tab stayed in the panel (Keep Tab When Stopped).
 
 Expand a running session and it carries nested rows: last thing you said, last
 reply, the current tool with its input, and `model · cost · turns`, plus an
@@ -292,7 +299,8 @@ tab where the section starts.
   inside it do nothing
 - After a full Cursor restart, **Re-attach All** recreates the separators
   together with the sessions, in the same order, so every section comes
-  back where it was. A separator you renamed by hand is left alone
+  back where it was; **Restart All** does the same. A separator you
+  renamed by hand is left alone
 - Separators never appear in the sidebar and never get agent state
 - macOS, Linux, WSL and Remote-SSH (it needs a POSIX shell)
 
@@ -310,9 +318,13 @@ Tab When Stopped**. A Stop then keeps the tab where it is:
 
 - The agent and the shell stop as with any Stop; the tab shows a short
   "stopped" note and costs about 1 MB, no CPU
+- The grey name comes with the tab marks (`${progress}` in the tab
+  description template, see [Agent state on the native terminal tab](#agent-state-on-the-native-terminal-tab));
+  the ⏸ is always there
 - **Start** (on the tab menu, the sidebar row, or a click on the row)
   brings the session back in that same tab and resumes its conversation
-- **Re-attach All** keeps these tabs in place too, also after a reboot
+- **Re-attach All** and **Restart All** keep these tabs in place too,
+  also after a reboot
 - **Close Tab When Stopped** turns it off; the other sessions keep the
   usual behaviour
 
@@ -475,6 +487,7 @@ Two extra link detectors on top of VS Code's built-in one. Both read the **rende
   - Each folder hides while empty and sits directly at the workspace root on its own; only when **both** have sessions do they nest under an **Open Sessions** parent
 - **Recent Sessions** — a pinned virtual folder at the top of each workspace with a flat, group-free list of sessions ordered by recency: running ones first (most recently active on top), then stopped ones by when they were stopped. Rows are ordinary session rows — every action (Start, Restart, View Conversation, …) works — and mirror the sessions in their groups below, so it's a shortcut, not a move. Capped at 50 (`terminalSessions.activityLimit`)
 - **Killed Sessions** — killing a session no longer deletes it: the entry (label, folder, resume flags, full conversation history) moves into a per-workspace graveyard, so Kill is reversible. Right-click a killed row → **Restore Session** recreates it under a fresh tab id and resumes its conversation. Also available from the Command Palette — the only way back when a workspace's last session was killed. Keeps the most recent 50 kills (`terminalSessions.killedLimit`); entries with nothing restorable (no label, no conversation) aren't kept, and the folder hides while empty. To kill *without* keeping anything — and free the disk space too — use **Kill & Delete Data…** instead
+- **Sessions** — below the pinned folders, one folder holds every group and ungrouped session of the workspace, so a collapsed workspace is a handful of rows. Drag and drop work inside it as before; dropping a row on the folder itself takes it out of its group. `terminalSessions.showSessionsFolder: false` puts the groups back directly under the workspace
 - **Enable/Disable per folder** — via the view's `⋯` menu (exactly one of Enable/Disable shows, tracking the current state), right-click on the folder row, or the `showNotesFolder` / `showFavoritesFolder` / `showOpenFolder` / `showBackgroundFolder` / `showActivityFolder` / `showKilledFolder` settings. All default to on
 
 ### Session notes

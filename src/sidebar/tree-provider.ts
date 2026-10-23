@@ -386,8 +386,9 @@ class SessionsTreeProvider
         const n = sessionNameForTerminal(t) ?? await this.resolveOpenName(t);
         if (n && !pos.has(n)) pos.set(n, pos.size);
       }
+      // A parked tab (stopped, tab kept) is open but not running.
       const open = allWsSessions
-        .filter(s => pos.has(s.name))
+        .filter(s => pos.has(s.name) && !s.stopped)
         .sort((a, b) => (pos.get(a.name)! - pos.get(b.name)!));
       const active = cfg.showOpenFolder && open.length > 0 ? new ActiveFolderItem(hash, open) : undefined;
       // Running (tmux alive, not Stopped) but no tab here: closed from the
@@ -605,6 +606,7 @@ class SessionsTreeProvider
       // canonical grouped rows once the filter clears.
       if (this.textFilterTokens.length > 0) {
         this.lastWorkspaceItems.clear();
+        this.lastSessionsFolders.clear();
         this.lastSessionItems.clear();
         this.lastGroupItems.clear();
         this.lastClusterItems.clear();
@@ -626,6 +628,7 @@ class SessionsTreeProvider
       }
       if (filtered.length === 0) {
         this.lastWorkspaceItems.clear();
+        this.lastSessionsFolders.clear();
         this.lastSessionItems.clear();
         this.lastGroupItems.clear();
         this.lastClusterItems.clear();
@@ -688,9 +691,17 @@ class SessionsTreeProvider
       // sessions, all sharing one sortOrder pool (interleaved via drag-drop).
       const allWsSessions = sessions.filter(s => s.workspaceHash === el.workspaceHash);
       const pinned = await this.specialFolders(el.workspaceHash, allWsSessions, cfg);
-      const rows = this.renderContainer(el.workspaceHash, undefined, allWsSessions, cfg);
       this.lastSessionsFolders.delete(el.workspaceHash);
-      if (!cfg.showSessionsFolder || rows.length === 0) return [...pinned, ...rows];
+      // Decided without rendering the rows: renderContainer caches every row it
+      // builds for reveal(), and rows built here but never shown (the folder is
+      // collapsed) would be orphans reveal() cannot reach.
+      const visible = cfg.sidebarFilterMode === 'stopped' ? allWsSessions.filter(s => s.stopped)
+        : cfg.sidebarFilterMode === 'running' ? allWsSessions.filter(s => !s.stopped)
+          : allWsSessions;
+      const hasGroups = cfg.sidebarFilterMode === 'all' && Object.keys(this.index.getGroups(el.workspaceHash)).length > 0;
+      if (!cfg.showSessionsFolder || (visible.length === 0 && !hasGroups)) {
+        return [...pinned, ...this.renderContainer(el.workspaceHash, undefined, allWsSessions, cfg)];
+      }
       const folder = new SessionsFolderItem(el.workspaceHash, allWsSessions);
       this.lastSessionsFolders.set(el.workspaceHash, folder);
       return [...pinned, folder];

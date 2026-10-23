@@ -86,7 +86,7 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   registerTabState(ctx, claudeTracker, session => {
     const parsed = parseSessionName(session, getConfig().sessionPrefix);
     const meta = parsed ? index.getSessionMeta(parsed.hash, session) : undefined;
-    return Boolean(meta?.stopped && meta?.keepTab);
+    return Boolean(meta?.stopped && meta?.parked);
   });
 
   // Prompt once to install hooks for the enabled agents (remembers declination).
@@ -161,7 +161,8 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
         e.affectsConfiguration('terminalSessions.sidebarSortMode') ||
         e.affectsConfiguration('terminalSessions.claudeSidebarDetails') ||
         e.affectsConfiguration('terminalSessions.activityLimit') ||
-        e.affectsConfiguration('terminalSessions.killedLimit')
+        e.affectsConfiguration('terminalSessions.killedLimit') ||
+        e.affectsConfiguration('terminalSessions.showSessionsFolder')
       ) refreshSidebar();
       // Settings-UI edits must move the ⋯-menu Enable/Disable labels too, not
       // just our own toggle commands.

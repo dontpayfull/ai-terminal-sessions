@@ -1839,8 +1839,18 @@
         },
         {
           "command": "terminalSessions.toggleKeepTab",
-          "when": "view == terminalSessions.sessions && viewItem =~ /^session/",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session($|\\.)/",
           "group": "danger@0.6"
+        },
+        {
+          "command": "terminalSessions.newGroup",
+          "when": "view == terminalSessions.sessions && viewItem == sessionsFolder",
+          "group": "navigation@0"
+        },
+        {
+          "command": "terminalSessions.newMasterGroup",
+          "when": "view == terminalSessions.sessions && viewItem == sessionsFolder",
+          "group": "navigation@1"
         }
       ],
       "terminal/tab/context": [

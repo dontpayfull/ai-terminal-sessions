@@ -168,7 +168,8 @@ export function resolveSessionNameForTerminal(
   const m = /#(\d+)\s*$/.exec(t.name || '');
   if (!m) return undefined;
   const tabId = parseInt(m[1], 10);
-  const labelPart = (t.name || '').replace(/#\d+\s*$/, '').trim();
+  // A parked tab's ⏸ is the extension's mark, not part of the label.
+  const labelPart = (t.name || '').replace(/^\u23f8\s*/, '').replace(/#\d+\s*$/, '').trim();
 
   const matches: string[] = [];
   for (const ws of Object.values(index.getAllWorkspaces())) {
@@ -200,6 +201,18 @@ export function resolveSessionNameForTerminal(
   // arbitrary match would reattach this terminal to a DIFFERENT project's tmux
   // (and stamp MRU / reveal the wrong folder). Let the PID fallback resolve it.
   return undefined;
+}
+
+/**
+ * The open tab attached to `name`, identified only by evidence that cannot
+ * point at another workspace's session: this window's shell args, else the
+ * tab's live tmux client. Never by the `#<id>` suffix of the tab name.
+ */
+export async function findVerifiedTabForSession(name: string): Promise<vscode.Terminal | undefined> {
+  for (const t of vscode.window.terminals) {
+    if (!t.exitStatus && sessionNameForTerminal(t) === name) return t;
+  }
+  return findLiveTerminalByProcess(name);
 }
 
 /**
@@ -272,9 +285,11 @@ export function setTabRetitler(fn: (tab: vscode.Terminal, name: string) => Promi
   retitler = fn;
 }
 
-/** Drop the ⏸ from a tab whose session runs again. */
-function clearParkedTitle(tab: vscode.Terminal): void {
-  if (retitler && tab.name.startsWith(PARKED_PREFIX)) void retitler(tab, tab.name.slice(PARKED_PREFIX.length));
+/** Drop the ⏸ from a tab whose session runs again. Awaited before the tab is
+ *  shown: the rename briefly activates the tab and then gives the previously
+ *  active one back, which must not be the last word. */
+async function clearParkedTitle(tab: vscode.Terminal): Promise<void> {
+  if (retitler && tab.name.startsWith(PARKED_PREFIX)) await retitler(tab, tab.name.slice(PARKED_PREFIX.length));
 }
 
 export async function openTerminalForSession(
@@ -292,22 +307,32 @@ export async function openTerminalForSession(
     const cfg0 = getConfig();
     const parsed0 = parseSessionName(name, cfg0.sessionPrefix);
     const meta0 = parsed0 ? index.getSessionMeta(parsed0.hash, name) : undefined;
-    if (parsed0 && meta0?.keepTab) {
+    if (parsed0 && meta0?.parked) {
       const tp = await tmux.detectTmuxPath(cfg0.tmuxPath);
       if (tp && await tmux.isParked(tp, name)) {
         if (meta0.stopped) parkedTitle = true;
         else {
           const at = cwd || meta0.folderPath || index.getWorkspace(parsed0.hash)?.path || process.env.HOME || '/';
-          await tmux.unparkSession(tp, name, at);
+          try {
+            await tmux.unparkSession(tp, name, at);
+          } catch (e) {
+            // Still on its placeholder: keep it stopped so Start stays offered.
+            index.setSessionStopped(parsed0.hash, name, true);
+            throw e;
+          }
+          index.setSessionParked(parsed0.hash, name, false);
           forceNew = false;
         }
+      } else {
+        // The placeholder is gone (killed, reboot): the flag is stale.
+        index.setSessionParked(parsed0.hash, name, false);
       }
     }
   }
   if (!forceNew) {
     const existing = findTerminalForSession(name);
     if (existing && !existing.exitStatus) {
-      if (!parkedTitle) clearParkedTitle(existing);
+      if (!parkedTitle) await clearParkedTitle(existing);
       existing.show();
       // Re-assert focus on the next tick: a sidebar TreeItem click (and the
       // refreshSidebar that follows) can leave keyboard focus on the tree, so
@@ -333,7 +358,7 @@ export async function openTerminalForSession(
     // reset to "tmux" by an empty title sequence), so both cheap stages miss it.
     const byPid = await findLiveTerminalByProcess(name);
     if (byPid) {
-      if (!parkedTitle) clearParkedTitle(byPid);
+      if (!parkedTitle) await clearParkedTitle(byPid);
       byPid.show();
       setTimeout(() => { try { byPid.show(); } catch { /* disposed */ } }, 0);
       void tmux.detectTmuxPath(getConfig().tmuxPath).then(tp => {

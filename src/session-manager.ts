@@ -250,6 +250,17 @@ export class SessionIndex {
     this.save();
   }
 
+  /** The session's tmux session sits on the parked placeholder (state, not
+   *  the keepTab preference: turning that off leaves a parked session parked). */
+  setSessionParked(hash: string, sessionName: string, parked: boolean): void {
+    this.reloadIfChanged();
+    const ws = this.data.workspaces[hash];
+    if (!ws?.sessions[sessionName]) return;
+    if (parked) ws.sessions[sessionName].parked = true;
+    else delete ws.sessions[sessionName].parked;
+    this.save();
+  }
+
   setSessionKeepTab(hash: string, sessionName: string, keep: boolean): void {
     this.reloadIfChanged();
     const ws = this.data.workspaces[hash];
@@ -982,8 +993,8 @@ export async function enrichSessions(
       locked: meta?.locked,
       // A live row is stopped only when parked: kept on its placeholder by a
       // Stop on a keep-tab session.
-      stopped: Boolean(meta?.stopped && meta?.keepTab),
-      parked: Boolean(meta?.stopped && meta?.keepTab),
+      stopped: Boolean(meta?.stopped && meta?.parked),
+      parked: Boolean(meta?.stopped && meta?.parked),
       keepTab: meta?.keepTab,
       groupId: meta?.groupId,
       branchSetId: meta?.branchSetId,
