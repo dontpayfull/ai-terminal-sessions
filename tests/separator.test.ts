@@ -23,7 +23,14 @@ test('isSeparator recognizes a reload-restored separator by its process', async 
   const script = "trap '' INT; while :; do sleep 2147483647; done";
   const child = spawn('/bin/sh', ['-c', script, 'terminal-sessions-separator', '── x ──'], { stdio: 'ignore', detached: true });
   try {
-    assert.equal(await isSeparator(fakeTerminal({}, child.pid)), true);
+    // Right after spawn the child can still be the forked node process, not
+    // yet /bin/sh: ask again (each fake tab is a fresh, uncached terminal).
+    let found = false;
+    for (let i = 0; i < 20 && !found; i++) {
+      found = await isSeparator(fakeTerminal({}, child.pid));
+      if (!found) await new Promise(r => setTimeout(r, 50));
+    }
+    assert.equal(found, true);
   } finally {
     process.kill(-child.pid!, 'SIGKILL');
   }
