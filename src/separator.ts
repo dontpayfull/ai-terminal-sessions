@@ -43,6 +43,19 @@ function separatorOptions(label: string): vscode.TerminalOptions {
   };
 }
 
+/** The label a separator tab was named with, or undefined when `name` is not
+ *  a separator name. Works on a dead tab too: the name is all that is left. */
+export function separatorLabel(name: string): string | undefined {
+  if (name === PREFIX.repeat(6)) return '';
+  const m = new RegExp(`^${PREFIX} (.+) ${PREFIX}$`).exec(name);
+  return m ? m[1] : undefined;
+}
+
+/** Open a separator tab (at the end of the list, not focused). */
+export function openSeparator(label: string): vscode.Terminal {
+  return vscode.window.createTerminal(separatorOptions(label));
+}
+
 const known = new WeakMap<vscode.Terminal, boolean>();
 
 /** The process's command line, or undefined when `ps` could not say. */

@@ -263,15 +263,51 @@ export async function resolveTmuxNameForTerminalLive(
   return tmuxNameFromTerminalProcess(t);
 }
 
+/** In front of a parked session's tab name. */
+export const PARKED_PREFIX = '\u23f8 ';
+
+/** Renames an open tab (lives in commands.ts, next to the rename tracker). */
+let retitler: ((tab: vscode.Terminal, name: string) => Promise<void>) | undefined;
+export function setTabRetitler(fn: (tab: vscode.Terminal, name: string) => Promise<void>): void {
+  retitler = fn;
+}
+
+/** Drop the ⏸ from a tab whose session runs again. */
+function clearParkedTitle(tab: vscode.Terminal): void {
+  if (retitler && tab.name.startsWith(PARKED_PREFIX)) void retitler(tab, tab.name.slice(PARKED_PREFIX.length));
+}
+
 export async function openTerminalForSession(
   name: string,
   cwd?: string,
   index?: SessionIndex,
   forceNew = false,
 ): Promise<vscode.Terminal | undefined> {
+  // A parked session (Stop on a keep-tab session) still has its tab. Every
+  // start path clears the stopped flag before it opens the terminal: bring the
+  // session back to a shell in that same tab instead of opening a second one.
+  // Still stopped means a plain attach, and a new tab says ⏸ too.
+  let parkedTitle = false;
+  if (index) {
+    const cfg0 = getConfig();
+    const parsed0 = parseSessionName(name, cfg0.sessionPrefix);
+    const meta0 = parsed0 ? index.getSessionMeta(parsed0.hash, name) : undefined;
+    if (parsed0 && meta0?.keepTab) {
+      const tp = await tmux.detectTmuxPath(cfg0.tmuxPath);
+      if (tp && await tmux.isParked(tp, name)) {
+        if (meta0.stopped) parkedTitle = true;
+        else {
+          const at = cwd || meta0.folderPath || index.getWorkspace(parsed0.hash)?.path || process.env.HOME || '/';
+          await tmux.unparkSession(tp, name, at);
+          forceNew = false;
+        }
+      }
+    }
+  }
   if (!forceNew) {
     const existing = findTerminalForSession(name);
     if (existing && !existing.exitStatus) {
+      if (!parkedTitle) clearParkedTitle(existing);
       existing.show();
       // Re-assert focus on the next tick: a sidebar TreeItem click (and the
       // refreshSidebar that follows) can leave keyboard focus on the tree, so
@@ -297,6 +333,7 @@ export async function openTerminalForSession(
     // reset to "tmux" by an empty title sequence), so both cheap stages miss it.
     const byPid = await findLiveTerminalByProcess(name);
     if (byPid) {
+      if (!parkedTitle) clearParkedTitle(byPid);
       byPid.show();
       setTimeout(() => { try { byPid.show(); } catch { /* disposed */ } }, 0);
       void tmux.detectTmuxPath(getConfig().tmuxPath).then(tp => {
@@ -325,7 +362,7 @@ export async function openTerminalForSession(
     if (parsed) {
       meta = index.getSessionMeta(parsed.hash, name);
       const ws = index.getWorkspace(parsed.hash);
-      termName = displayName(meta?.label, ws?.label || parsed.hash, parsed.tabId);
+      termName = (parkedTitle ? PARKED_PREFIX : '') + displayName(meta?.label, ws?.label || parsed.hash, parsed.tabId);
       if (!resolvedCwd) resolvedCwd = meta?.folderPath || ws?.path;
     }
   }

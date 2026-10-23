@@ -597,6 +597,52 @@ export async function exitCopyMode(tmux: string, session: string): Promise<void>
   } catch { /* not in a mode, or no server */ }
 }
 
+/** Marks the placeholder pane of a parked session (passed as the shell's $0,
+ *  so tmux's `pane_start_command` carries it). */
+const PARK_MARKER = 'terminal-sessions-parked';
+// What a parked tab shows: the session name dimmed and how to bring it back.
+// Ctrl+C / Ctrl+\ / Ctrl+Z and typing do nothing; the shell only waits.
+const PARK_SCRIPT = `trap '' INT QUIT TSTP; printf '\\033[?25l\\033[2J\\033[H'; stty -echo 2>/dev/null; `
+  + `printf '\\n  \\033[2m\u23f8  %s is stopped. Start it from the sidebar or the tab menu.\\033[0m\\n' "$1"; `
+  + 'while :; do sleep 2147483647; done';
+
+/** Replace every window of a session with one idle placeholder window. */
+async function replaceWindows(tmux: string, name: string, cmd: string[], cwd?: string): Promise<void> {
+  const { stdout } = await execFileP(tmux, [
+    'new-window', '-d', '-P', '-F', '#{window_id}', '-t', exactPane(name),
+    ...(cwd ? ['-c', cwd] : []), ...cmd,
+  ]);
+  const id = stdout.trim();
+  if (!/^@\d+$/.test(id)) throw new Error(`tmux new-window returned ${JSON.stringify(id)}`);
+  // Everything else goes, the agent with it (its panes get SIGHUP, as on kill-session).
+  await execFileP(tmux, ['kill-window', '-a', '-t', id]);
+}
+
+/**
+ * Stop what runs in a session but keep the session, parked on an idle
+ * placeholder, so the terminal tab attached to it stays where it is.
+ */
+export async function parkSession(tmux: string, name: string, label: string): Promise<void> {
+  await replaceWindows(tmux, name, ['/bin/sh', '-c', PARK_SCRIPT, PARK_MARKER, label]);
+}
+
+/** Bring a parked session back to a fresh shell in `cwd`, in the same tab. */
+export async function unparkSession(tmux: string, name: string, cwd: string): Promise<void> {
+  await replaceWindows(tmux, name, [], cwd);
+}
+
+/** True when the session exists and shows the parked placeholder. */
+export async function isParked(tmux: string, name: string): Promise<boolean> {
+  try {
+    const { stdout } = await execFileP(tmux, [
+      'display-message', '-p', '-t', exactPane(name), '#{pane_start_command}',
+    ]);
+    return stdout.includes(PARK_MARKER);
+  } catch {
+    return false;
+  }
+}
+
 /** Shell pids of every pane in a session (all windows). Roots for walking the
  *  process tree to find a live agent process and read its launch flags. */
 export async function panePids(tmux: string, session: string): Promise<number[]> {

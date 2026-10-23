@@ -83,7 +83,11 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   // Agent state (running / finished / blocked / failed) in the NATIVE terminal tab
   // description. On by default, but silent until `${sequence}` is in the user's
   // tab-description template (offered once).
-  registerTabState(ctx, claudeTracker);
+  registerTabState(ctx, claudeTracker, session => {
+    const parsed = parseSessionName(session, getConfig().sessionPrefix);
+    const meta = parsed ? index.getSessionMeta(parsed.hash, session) : undefined;
+    return Boolean(meta?.stopped && meta?.keepTab);
+  });
 
   // Prompt once to install hooks for the enabled agents (remembers declination).
   setPlatformContext();

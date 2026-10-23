@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { SessionIndex, enrichSessions, groupByWorkspace } from '../session-manager';
 import * as tmux from '../tmux';
 import { getConfig, setSortMode, VIEW_ID, SidebarSortMode, STOPPED_URI_SCHEME, BRANCH_URI_SCHEME } from '../config';
-import { WorkspaceTreeItem, GroupTreeItem, BranchClusterItem, SessionTreeItem, SubagentTreeItem, SubagentsFolderItem, FavoritesFolderItem, OpenFolderItem, ActiveFolderItem, BackgroundFolderItem, ActivityFolderItem, KilledFolderItem, KilledSessionItem, CleanupNoticeItem, FilterHeaderItem, NotesFolderItem, NoteTreeItem, NoteRow, buildClaudeDetails } from './items';
+import { WorkspaceTreeItem, GroupTreeItem, BranchClusterItem, SessionTreeItem, SubagentTreeItem, SubagentsFolderItem, FavoritesFolderItem, OpenFolderItem, ActiveFolderItem, BackgroundFolderItem, ActivityFolderItem, KilledFolderItem, KilledSessionItem, CleanupNoticeItem, FilterHeaderItem, NotesFolderItem, NoteTreeItem, NoteRow, SessionsFolderItem, buildClaudeDetails } from './items';
 import { NoteStore } from '../notes';
 import { shouldShowCleanupNotice, readClaudeCleanupDays, countExpiringTranscripts, ExpiryInfo } from '../notices';
 import { sessionNameForTerminal, resolveTmuxNameForTerminalLive } from '../profile-provider';
@@ -117,6 +117,11 @@ class SessionsTreeProvider
   // the user folds one); groups/masters render Collapsed by default (recorded
   // only when the user opens one).
   private collapsedWorkspaceIds = new Set<string>();
+  // Same for the "Sessions" folders (`sesf:<hash>`), default open.
+  private collapsedSessionsFolderIds = new Set<string>();
+  // Last rendered "Sessions" folder per workspace: the parent of every
+  // top-level group and ungrouped row while it is shown.
+  private lastSessionsFolders = new Map<string, SessionsFolderItem>();
   private expandedContainerIds = new Set<string>();
   // Fork clusters render Expanded by default (active parallel work), so — unlike
   // groups — we record only the ones the user has COLLAPSED, mirroring workspaces.
@@ -193,7 +198,7 @@ class SessionsTreeProvider
         const g = this.lastGroupItems.get(`${el.session.workspaceHash}::${gid}`);
         if (g) return g;
       }
-      return this.lastWorkspaceItems.get(el.session.workspaceHash);
+      return this.rootOf(el.session.workspaceHash);
     }
     if (el instanceof BranchClusterItem) {
       // The cluster sits in the container its members share (a group) or at root.
@@ -201,7 +206,7 @@ class SessionsTreeProvider
         const g = this.lastGroupItems.get(`${el.workspaceHash}::${el.groupId}`);
         if (g) return g;
       }
-      return this.lastWorkspaceItems.get(el.workspaceHash);
+      return this.rootOf(el.workspaceHash);
     }
     if (el instanceof GroupTreeItem) {
       const parentId = this.index.getGroups(el.workspaceHash)[el.groupId]?.parentGroupId;
@@ -209,7 +214,7 @@ class SessionsTreeProvider
         const pg = this.lastGroupItems.get(`${el.workspaceHash}::${parentId}`);
         if (pg) return pg;
       }
-      return this.lastWorkspaceItems.get(el.workspaceHash);
+      return this.rootOf(el.workspaceHash);
     }
     if (el instanceof NoteTreeItem) {
       return this.lastNotesFolders.get(el.workspaceHash)
@@ -220,10 +225,16 @@ class SessionsTreeProvider
     }
     if (el instanceof OpenFolderItem || el instanceof FavoritesFolderItem
       || el instanceof ActivityFolderItem || el instanceof KilledFolderItem
-      || el instanceof NotesFolderItem) {
+      || el instanceof NotesFolderItem || el instanceof SessionsFolderItem) {
       return this.lastWorkspaceItems.get(el.workspaceHash);
     }
     return undefined;
+  }
+
+  /** The container of a workspace's top-level groups and ungrouped rows: its
+   *  "Sessions" folder when shown, else the workspace row itself. */
+  private rootOf(hash: string): vscode.TreeItem | undefined {
+    return this.lastSessionsFolders.get(hash) ?? this.lastWorkspaceItems.get(hash);
   }
 
   getLastSessionItem(name: string): SessionTreeItem | undefined {
@@ -238,6 +249,9 @@ class SessionsTreeProvider
     if (el instanceof WorkspaceTreeItem) {
       if (expanded) this.collapsedWorkspaceIds.delete(id);
       else this.collapsedWorkspaceIds.add(id);
+    } else if (el instanceof SessionsFolderItem) {
+      if (expanded) this.collapsedSessionsFolderIds.delete(id);
+      else this.collapsedSessionsFolderIds.add(id);
     } else if (el instanceof GroupTreeItem) {
       if (expanded) this.expandedContainerIds.add(id);
       else this.expandedContainerIds.delete(id);
@@ -253,6 +267,8 @@ class SessionsTreeProvider
    *  by the tab-focus highlight, which must never expand a hidden branch. */
   isSessionVisible(session: SessionInfo): boolean {
     if (this.collapsedWorkspaceIds.has(`ws:${session.workspaceHash}`)) return false;
+    if (this.lastSessionsFolders.has(session.workspaceHash)
+      && this.collapsedSessionsFolderIds.has(`sesf:${session.workspaceHash}`)) return false;
     // A session in a collapsed fork cluster is off-screen even if its group chain
     // is open. (When no cluster rendered, the id simply isn't in the set.)
     if (session.branchSetId
@@ -558,6 +574,7 @@ class SessionsTreeProvider
     // detail/subagent row from spawning `tmux list-sessions` on every refresh.
     const needsSessions = el === undefined
       || el instanceof WorkspaceTreeItem
+      || el instanceof SessionsFolderItem
       || el instanceof GroupTreeItem;
     let sessions: SessionInfo[] = [];
     if (needsSessions) {
@@ -643,6 +660,7 @@ class SessionsTreeProvider
         out.push(new CleanupNoticeItem(readClaudeCleanupDays(), expiring, warnDays));
       }
       this.lastWorkspaceItems.clear();
+      this.lastSessionsFolders.clear();
       // Groups AND sessions are rebuilt lazily on expand; drop stale entries so
       // getParent()/reveal() never get a container or session item from before a
       // move (a session cached at root would fail reveal after it moves into a
@@ -669,10 +687,17 @@ class SessionsTreeProvider
       // Root container: top-level masters + top-level normal groups + ungrouped
       // sessions, all sharing one sortOrder pool (interleaved via drag-drop).
       const allWsSessions = sessions.filter(s => s.workspaceHash === el.workspaceHash);
-      return [
-        ...(await this.specialFolders(el.workspaceHash, allWsSessions, cfg)),
-        ...this.renderContainer(el.workspaceHash, undefined, allWsSessions, cfg),
-      ];
+      const pinned = await this.specialFolders(el.workspaceHash, allWsSessions, cfg);
+      const rows = this.renderContainer(el.workspaceHash, undefined, allWsSessions, cfg);
+      this.lastSessionsFolders.delete(el.workspaceHash);
+      if (!cfg.showSessionsFolder || rows.length === 0) return [...pinned, ...rows];
+      const folder = new SessionsFolderItem(el.workspaceHash, allWsSessions);
+      this.lastSessionsFolders.set(el.workspaceHash, folder);
+      return [...pinned, folder];
+    }
+    if (el instanceof SessionsFolderItem) {
+      const allWsSessions = sessions.filter(s => s.workspaceHash === el.workspaceHash);
+      return this.renderContainer(el.workspaceHash, undefined, allWsSessions, cfg);
     }
     if (el instanceof NotesFolderItem) {
       return el.entries.map(r => new NoteTreeItem(el.workspaceHash, r));
@@ -850,6 +875,8 @@ class SessionsTreeProvider
     type Payload = DragSession | DragGroup;
     const raw = item.value as Payload[];
     if (!Array.isArray(raw) || raw.length === 0) return;
+    // The "Sessions" folder holds the workspace root: a drop on it is a drop there.
+    if (target instanceof SessionsFolderItem) target = this.lastWorkspaceItems.get(target.workspaceHash);
 
     const targetHash = target instanceof SessionTreeItem
       ? target.session.workspaceHash
@@ -1181,6 +1208,7 @@ export async function revealSessionInSidebar(
       // Descend into fork clusters too, so a clustered session's row is built and
       // cached (and its cluster registered for getParent) before reveal walks up.
       if (node instanceof WorkspaceTreeItem
+        || node instanceof SessionsFolderItem
         || node instanceof GroupTreeItem
         || node instanceof BranchClusterItem) {
         // eslint-disable-next-line no-await-in-loop
@@ -1227,6 +1255,13 @@ export async function collapseAllSessions(): Promise<void> {
       try {
         // eslint-disable-next-line no-await-in-loop
         await treeViewRef.reveal(root, { expand: 1, focus: false, select: false });
+        // The groups live one level down when the "Sessions" folder is shown.
+        // eslint-disable-next-line no-await-in-loop
+        for (const kid of await provider.getChildren(root)) {
+          if (!(kid instanceof SessionsFolderItem)) continue;
+          // eslint-disable-next-line no-await-in-loop
+          await treeViewRef.reveal(kid, { expand: 1, focus: false, select: false });
+        }
       } catch { /* reveal can throw if the item is stale — ignore */ }
     }
   }

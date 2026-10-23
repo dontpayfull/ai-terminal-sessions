@@ -187,7 +187,8 @@ export class TerminalTracker implements vscode.Disposable {
 
   private extractLabel(displayName: string, tabId?: number): string {
     // Strip our own "Persistent: " / "Attached: " prefix if present so label stores only user intent.
-    let label = displayName.replace(/^(Persistent|Attached):\s*/i, '').trim();
+    // The ⏸ of a parked tab is the extension's mark, never part of the name.
+    let label = displayName.replace(/^\u23f8\s*/, '').replace(/^(Persistent|Attached):\s*/i, '').trim();
     // Strip the trailing "#<tabId>" the extension itself appends when it builds the
     // tab name (defaultTermName). Without this, an in-place tab rename re-saves the
     // suffix into the label and displayName doubles it ("api-v2 #3 #3"). Only strip

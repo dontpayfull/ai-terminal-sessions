@@ -26,6 +26,11 @@ export interface SessionInfo {
   alertOnDone?: boolean;  // when true, a finish plays the alert sound and opens a dialog
   favorite?: boolean;  // when true, session shows in the Favorite Sessions folder (star toggle)
   locked?: boolean;  // when true, the session is protected from Kill (padlock shown; unlock to remove)
+  /** Stop parks the session instead of ending it: its tmux session stays on an
+   *  idle placeholder so the terminal tab keeps its place, greyed and marked ⏸. */
+  keepTab?: boolean;
+  /** tmux session alive on the parked placeholder (stopped with keepTab). */
+  parked?: boolean;
   stopped?: boolean;  // true when user clicked Stop; the tmux session is dead but the entry is kept
   stoppedAt?: Date;   // when it was stopped (Sessions Activity ordering); may be unset on old entries
   groupId?: string;  // when set, session lives inside a custom group at workspace level
@@ -145,6 +150,9 @@ export interface SessionLabel {
   // hidden in the sidebar and refused by the command, guarding against accidental
   // removal. Toggled via right-click Lock/Unlock. A 🔒 hint is shown on the row.
   locked?: boolean;
+  // Stop parks this session instead of ending it, so its terminal tab stays in
+  // place (greyed, ⏸ in front of its name) until Start brings it back.
+  keepTab?: boolean;
   // Original cwd the session was created in. Differs from the workspace root
   // when the session was started from a subfolder (right-click → New Persistent
   // in Folder). Persisted so Restart re-creates tmux in the SAME folder, not

@@ -250,6 +250,15 @@ export class SessionIndex {
     this.save();
   }
 
+  setSessionKeepTab(hash: string, sessionName: string, keep: boolean): void {
+    this.reloadIfChanged();
+    const ws = this.data.workspaces[hash];
+    if (!ws?.sessions[sessionName]) return;
+    if (keep) ws.sessions[sessionName].keepTab = true;
+    else delete ws.sessions[sessionName].keepTab;
+    this.save();
+  }
+
   isSessionLocked(hash: string, sessionName: string): boolean {
     return this.data.workspaces[hash]?.sessions[sessionName]?.locked === true;
   }
@@ -971,7 +980,11 @@ export async function enrichSessions(
       alertOnDone: meta?.alertOnDone,
       favorite: meta?.favorite,
       locked: meta?.locked,
-      stopped: false,
+      // A live row is stopped only when parked: kept on its placeholder by a
+      // Stop on a keep-tab session.
+      stopped: Boolean(meta?.stopped && meta?.keepTab),
+      parked: Boolean(meta?.stopped && meta?.keepTab),
+      keepTab: meta?.keepTab,
       groupId: meta?.groupId,
       branchSetId: meta?.branchSetId,
       branchName: bset?.name,
@@ -1027,6 +1040,7 @@ export async function enrichSessions(
         alertOnDone: meta.alertOnDone,
         favorite: meta.favorite,
         locked: meta.locked,
+        keepTab: meta.keepTab,
         stopped: true,
         stoppedAt: meta.stoppedAt ? new Date(meta.stoppedAt) : undefined,
         groupId: meta.groupId,

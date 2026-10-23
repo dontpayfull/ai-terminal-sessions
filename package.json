@@ -405,6 +405,11 @@
           "default": true,
           "description": "Show the pinned \"Sessions Killed\" folder: recently killed sessions kept in a graveyard so they can be restored (right-click → Restore Session). Hidden while empty. Toggle also available in the view's ⋯ menu."
         },
+        "terminalSessions.showSessionsFolder": {
+          "type": "boolean",
+          "default": true,
+          "description": "Gather each workspace's groups and ungrouped sessions in one \"Sessions\" folder below the pinned folders (Favorite, Active, Recent, Killed), so a collapsed workspace stays short. Off: they sit directly under the workspace, as before."
+        },
         "terminalSessions.tabStateText": {
           "type": "string",
           "enum": [
@@ -827,6 +832,21 @@
         "icon": "$(unlock)"
       },
       {
+        "command": "terminalSessions.keepTabOn",
+        "title": "Keep Tab When Stopped",
+        "category": "Terminal Sessions"
+      },
+      {
+        "command": "terminalSessions.keepTabOff",
+        "title": "Close Tab When Stopped",
+        "category": "Terminal Sessions"
+      },
+      {
+        "command": "terminalSessions.toggleKeepTab",
+        "title": "Toggle Keep Tab When Stopped",
+        "category": "Terminal Sessions"
+      },
+      {
         "command": "terminalSessions.lockedHint",
         "title": "Locked (right-click to Unlock)",
         "icon": "$(lock)"
@@ -1167,6 +1187,14 @@
         {
           "command": "terminalSessions.disableNotesFolder",
           "when": "terminalSessions.notesFolderEnabled"
+        },
+        {
+          "command": "terminalSessions.keepTabOn",
+          "when": "false"
+        },
+        {
+          "command": "terminalSessions.keepTabOff",
+          "when": "false"
         }
       ],
       "explorer/context": [
@@ -1229,7 +1257,8 @@
         },
         {
           "command": "terminalSessions.stop",
-          "group": "8_restart@0"
+          "group": "8_restart@0",
+          "when": "!terminalSessions.activeTerminalParked"
         },
         {
           "command": "terminalSessions.kill",
@@ -1323,6 +1352,21 @@
           "command": "terminalSessions.lockSession",
           "when": "!terminalSessions.activeTerminalLocked",
           "group": "6_stop@3.5"
+        },
+        {
+          "command": "terminalSessions.start",
+          "when": "terminalSessions.activeTerminalParked",
+          "group": "8_restart@0"
+        },
+        {
+          "command": "terminalSessions.keepTabOn",
+          "when": "!terminalSessions.activeTerminalKeepTab",
+          "group": "8_restart@0.5"
+        },
+        {
+          "command": "terminalSessions.keepTabOff",
+          "when": "terminalSessions.activeTerminalKeepTab",
+          "group": "8_restart@0.5"
         }
       ],
       "view/title": [
@@ -1792,6 +1836,11 @@
           "command": "terminalSessions.disableNotesFolder",
           "when": "view == terminalSessions.sessions && viewItem == notesFolder",
           "group": "9_manage@1"
+        },
+        {
+          "command": "terminalSessions.toggleKeepTab",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session/",
+          "group": "danger@0.6"
         }
       ],
       "terminal/tab/context": [

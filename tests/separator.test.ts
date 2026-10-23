@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import * as assert from 'node:assert/strict';
 import { spawn } from 'child_process';
 import type * as vscode from 'vscode';
-import { isSeparator } from '../src/separator';
+import { isSeparator, separatorLabel } from '../src/separator';
 
 function fakeTerminal(creationOptions: object, pid?: number): vscode.Terminal {
   return { creationOptions, processId: Promise.resolve(pid) } as unknown as vscode.Terminal;
@@ -36,4 +36,11 @@ test('isSeparator does not claim an ordinary long sleep', async () => {
   } finally {
     child.kill();
   }
+});
+
+test('separatorLabel reads the label back from a separator tab name', () => {
+  assert.equal(separatorLabel('── Research ──'), 'Research');
+  assert.equal(separatorLabel('────────────'), '');
+  assert.equal(separatorLabel('2026.Q4 - Research #315'), undefined);
+  assert.equal(separatorLabel('── half'), undefined);
 });

@@ -258,6 +258,7 @@ place of **Kill Session**.
  │ Kill Terminal                 (VS Code's own)     │
  ├───────────────────────────────────────────────────┤
  │ Stop Session (keep in sidebar)                    │
+ │ Keep Tab When Stopped / Close Tab When Stopped    │
  │ Restart Session (kill + fresh shell)              │
  └───────────────────────────────────────────────────┘
 ```
@@ -289,8 +290,31 @@ tab where the section starts.
 - It is a real tab running an idle shell (about 2 MB, no CPU, no tmux), so
   the panel keeps it in place across a window reload. Ctrl+C and typing
   inside it do nothing
+- After a full Cursor restart, **Re-attach All** recreates the separators
+  together with the sessions, in the same order, so every section comes
+  back where it was. A separator you renamed by hand is left alone
 - Separators never appear in the sidebar and never get agent state
 - macOS, Linux, WSL and Remote-SSH (it needs a POSIX shell)
+
+### Keep a stopped session's tab
+
+Normally **Stop** closes the session's tab. For the sessions you want to
+keep in view, right-click the tab (or the sidebar row) and pick **Keep
+Tab When Stopped**. A Stop then keeps the tab where it is:
+
+```
+ my-app - Pricing #7
+ ⏸ my-app - Archive #8       ← stopped, name greyed
+ my-app - Competitors #9
+```
+
+- The agent and the shell stop as with any Stop; the tab shows a short
+  "stopped" note and costs about 1 MB, no CPU
+- **Start** (on the tab menu, the sidebar row, or a click on the row)
+  brings the session back in that same tab and resumes its conversation
+- **Re-attach All** keeps these tabs in place too, also after a reboot
+- **Close Tab When Stopped** turns it off; the other sessions keep the
+  usual behaviour
 
 ### One Rename
 
@@ -393,6 +417,7 @@ Three moving pieces, each independent, composed to give you a persistent and obs
 - **Terminal tab menu** — right-click a terminal tab for the session actions without leaving the terminal: Add/Remove Favorite, Switch to YOLO/Normal Mode, Mute/Unmute Notifications, Alert When Done, Mark as Seen, Fork Conversation (Claude), View Conversation, Copy Last Conversation ID / Path, Lock/Unlock, Kill Session, Kill & Delete Data…, and Stop and Restart at the very end, below VS Code's own Kill Terminal. Right-clicking inside the terminal body also offers View Conversation and the two Copy actions. The state-dependent entries (YOLO, Mute, Lock, Fork) follow the **active** terminal, which is the one you right-click
 - **Auto-prune** stale sessions after configurable days (default 14)
 - **Reboot-safe rows** — sessions that were running when the machine shut down reappear as stopped rows after restart (with their conversation history), even if you skip the restore offer; nothing silently vanishes
+- **Keep Tab When Stopped**: per session, from the tab or row menu: Stop keeps the tab where it is, greyed with ⏸ in front of its name, and Start brings the session back in that same tab. See [Keep a stopped session's tab](#keep-a-stopped-sessions-tab)
 - **Lock a session against Kill** — right-click → **Lock (Protect from Kill)**; a padlock takes the Kill button's place and the session can no longer be killed — not from the row, not by "Kill all for this workspace", not by auto-prune — until you right-click → **Unlock (Allow Kill)**. The inline padlock is a deliberate indicator only (clicking it won't unlock), so an important long-runner survives an accidental click. Restart and Stop stay available
 
 ### UI integration

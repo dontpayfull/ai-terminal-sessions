@@ -5,7 +5,7 @@ import * as vscode from 'vscode';
 import { COMMAND, getConfig, setSortMode, setFilterMode, SidebarSortMode, SidebarFilterMode, SORT_MODES, NativeNotifMode, MAX_CLEAR_MINUTES, clampClearMinutes } from './config';
 import * as tmux from './tmux';
 import { SessionIndex, enrichSessions } from './session-manager';
-import { openTerminalForSession, findTerminalForSession, metaIconAndColor, sessionNameForTerminal, resolveTmuxNameForTerminalLive, nextSafeTabId } from './profile-provider';
+import { openTerminalForSession, findTerminalForSession, metaIconAndColor, sessionNameForTerminal, resolveTmuxNameForTerminalLive, nextSafeTabId, PARKED_PREFIX, setTabRetitler } from './profile-provider';
 import { currentWorkspace, hashPath, sessionName as buildSessionName, parseSessionName } from './workspace-id';
 import { SessionTreeItem, SubagentTreeItem, GroupTreeItem, WorkspaceTreeItem, KilledSessionItem } from './sidebar/items';
 import { refreshSidebar, collapseAllSessions, revealSessionInSidebar, setSidebarTextFilter, getSidebarTextFilter } from './sidebar/tree-provider';
@@ -27,6 +27,7 @@ import { readClaudeCleanupDays, setClaudeCleanupDays, snoozeCleanupNotice, count
 import type { AgentProvider, AgentId } from './agents/types';
 import type { TerminalTracker } from './terminal-tracker';
 import { setAsDefaultProfile, restorePreviousDefaultProfile } from './default-profile';
+import { separatorLabel, openSeparator } from './separator';
 
 /** Delay between opening the attached terminal and sending `claude --resume`,
  *  giving the shell time to finish rc/zshrc init. Heavy zsh setups (oh-my-zsh,
@@ -226,6 +227,8 @@ export function registerCommands(
   searchIndex: ClaudeSearchIndex,
   registry: AgentRegistry,
 ): void {
+  // Parked tabs get their ⏸ cleared by the terminal opener when they start again.
+  setTabRetitler(retitleTab);
   ctx.subscriptions.push(
     vscode.workspace.registerTextDocumentContentProvider(CONVERSATION_SCHEME, conversationDocProvider),
   );
@@ -296,9 +299,15 @@ export function registerCommands(
     }),
     vscode.commands.registerCommand(COMMAND.forkConversation, (item?: SessionTreeItem | vscode.Terminal) => cmdForkConversation(index, registry, claudeTracker, item)),
     vscode.commands.registerCommand(COMMAND.unlinkBranch, (item?: SessionTreeItem) => cmdUnlinkBranch(index, item)),
-    vscode.commands.registerCommand(COMMAND.start, async (item?: SessionTreeItem, selection?: vscode.TreeItem[]) => {
+    vscode.commands.registerCommand(COMMAND.start, async (item?: SessionTreeItem | vscode.Terminal, selection?: vscode.TreeItem[]) => {
       const many = selectionTargets(selection);
-      if (!many) return cmdStart(index, registry, claudeTracker, item);
+      // From a parked tab's menu: the tab names the session.
+      if (item && typeof (item as vscode.Terminal).sendText === 'function') {
+        const name = await resolveSessionNameFromInvocation(item, index, getConfig().sessionPrefix);
+        if (name) return cmdStart(index, registry, claudeTracker, undefined, name);
+        return;
+      }
+      if (!many) return cmdStart(index, registry, claudeTracker, item as SessionTreeItem | undefined);
       for (const r of many) {
         if (!r.session.stopped) continue;
         // eslint-disable-next-line no-await-in-loop
@@ -359,6 +368,9 @@ export function registerCommands(
       bulkApply(many, (hash, name) => index.setSessionLocked(hash, name, false), n => `${n} sessions unlocked.`);
     }),
     vscode.commands.registerCommand(COMMAND.lockedHint, (item?: SessionTreeItem) => cmdLockedHint(item)),
+    vscode.commands.registerCommand(COMMAND.keepTabOn, (item?: SessionTreeItem | vscode.Terminal, selection?: vscode.TreeItem[]) => cmdSetKeepTab(index, item, selection, true)),
+    vscode.commands.registerCommand(COMMAND.keepTabOff, (item?: SessionTreeItem | vscode.Terminal, selection?: vscode.TreeItem[]) => cmdSetKeepTab(index, item, selection, false)),
+    vscode.commands.registerCommand(COMMAND.toggleKeepTab, (item?: SessionTreeItem | vscode.Terminal, selection?: vscode.TreeItem[]) => cmdSetKeepTab(index, item, selection, undefined)),
     vscode.commands.registerCommand(COMMAND.openSubagentTranscript, (item?: SubagentTreeItem) => cmdOpenSubagentTranscript(item)),
     vscode.commands.registerCommand(COMMAND.viewConversation, (arg?: SessionTreeItem | vscode.Terminal | { transcriptPath: string; title?: string }) => cmdViewConversation(index, registry, claudeTracker, arg)),
     vscode.commands.registerCommand(COMMAND.nameSession, (arg?: SessionTreeItem | vscode.Terminal | { sessionId: string; current?: string; transcriptPath?: string; agent?: AgentId }) => cmdNameSession(index, registry, claudeTracker, arg)),
@@ -1080,6 +1092,48 @@ async function cmdSetSessionLocked(
   );
 }
 
+/**
+ * Keep Tab When Stopped on or off (undefined = flip each one). Applies to the
+ * next Stop: a session that is already parked keeps its tab until Start or
+ * Kill either way.
+ */
+async function cmdSetKeepTab(
+  index: SessionIndex,
+  item: SessionTreeItem | vscode.Terminal | undefined,
+  selection: vscode.TreeItem[] | undefined,
+  keep: boolean | undefined,
+): Promise<void> {
+  const cfg = getConfig();
+  const many = selectionTargets(selection);
+  const names = many
+    ? many.map(r => r.session.name)
+    : [await resolveSessionNameFromInvocation(item, index, cfg.sessionPrefix)].filter((n): n is string => !!n);
+  if (names.length === 0) {
+    vscode.window.showErrorMessage('Use the sidebar context menu or a terminal tab on a session.');
+    return;
+  }
+  let on = 0;
+  for (const name of names) {
+    const parsed = parseSessionName(name, cfg.sessionPrefix);
+    if (!parsed) continue;
+    const next = keep ?? !index.getSessionMeta(parsed.hash, name)?.keepTab;
+    index.setSessionKeepTab(parsed.hash, name, next);
+    if (next) on++;
+  }
+  refreshSidebar();
+  void syncActiveTerminalContext(index);
+  const first = parseSessionName(names[0], cfg.sessionPrefix);
+  const label = names.length === 1
+    ? (first && index.getSessionLabel(first.hash, names[0])) || names[0]
+    : `${names.length} sessions`;
+  vscode.window.setStatusBarMessage(
+    on === names.length
+      ? `${label}: Stop keeps the tab (⏸, Start brings it back)`
+      : on === 0 ? `${label}: Stop closes the tab` : `${label}: keep tab on for ${on}, off for ${names.length - on}`,
+    3000,
+  );
+}
+
 /** Context keys mirroring the ACTIVE terminal's session state, for the native
  *  terminal-tab right-click menu: a `when` clause can't read the right-clicked
  *  tab's session, so it keys off the active terminal (the one being acted on).
@@ -1091,7 +1145,12 @@ async function cmdSetSessionLocked(
  *  Every key falls to its "safe" value on a resolve miss; the commands re-check
  *  the real state, so a momentarily stale key only degrades to "warn on click". */
 export async function syncActiveTerminalContext(index: SessionIndex): Promise<void> {
-  const set = (locked: boolean, muted: boolean, yolo: 'on' | 'off' | 'none', forkable: boolean, alert = false): void => {
+  const set = (
+    locked: boolean, muted: boolean, yolo: 'on' | 'off' | 'none', forkable: boolean, alert = false,
+    keepTab = false, parked = false,
+  ): void => {
+    void vscode.commands.executeCommand('setContext', 'terminalSessions.activeTerminalKeepTab', keepTab);
+    void vscode.commands.executeCommand('setContext', 'terminalSessions.activeTerminalParked', parked);
     void vscode.commands.executeCommand('setContext', 'terminalSessions.activeTerminalLocked', locked);
     void vscode.commands.executeCommand('setContext', 'terminalSessions.activeTerminalMuted', muted);
     void vscode.commands.executeCommand('setContext', 'terminalSessions.activeTerminalAlert', alert);
@@ -1102,7 +1161,10 @@ export async function syncActiveTerminalContext(index: SessionIndex): Promise<vo
   if (!t) { set(false, false, 'none', false); return; }
   const s = await resolveSessionInfoFromInvocation(t, index);
   if (!s) { set(false, false, 'none', false); return; }
-  set(Boolean(s.locked), Boolean(s.muted), s.yoloCapable ? (s.yolo ? 'on' : 'off') : 'none', Boolean(s.forkable), Boolean(s.alertOnDone));
+  set(
+    Boolean(s.locked), Boolean(s.muted), s.yoloCapable ? (s.yolo ? 'on' : 'off') : 'none', Boolean(s.forkable),
+    Boolean(s.alertOnDone), Boolean(s.keepTab), Boolean(s.parked),
+  );
 }
 
 /** Inline padlock button on a locked row. It is a deliberate no-op on the lock
@@ -1549,7 +1611,10 @@ async function resolveSessionInfoFromInvocation(
     alertOnDone: meta?.alertOnDone,
     favorite: meta?.favorite,
     locked: meta?.locked,
-    stopped: false,
+    // A tab is a live session, unless it is a parked one.
+    stopped: Boolean(meta?.stopped && meta?.keepTab),
+    parked: Boolean(meta?.stopped && meta?.keepTab),
+    keepTab: meta?.keepTab,
     groupId: meta?.groupId,
     branchSetId: meta?.branchSetId,
     forkable: isForkableAgent(agent),
@@ -2219,6 +2284,29 @@ async function cmdStop(
     if (confirm !== 'Stop') return;
   }
 
+  const stopMeta = index.getSessionMeta(parsed.hash, name);
+  if (stopMeta?.stopped) {
+    vscode.window.setStatusBarMessage(`${labelDisplay} is already stopped.`, 2500);
+    return;
+  }
+  // Keep Tab When Stopped: park the session instead of ending it, so the tab
+  // attached to it stays where it is (greyed, ⏸ in front of its name).
+  const asTab = item && typeof (item as vscode.Terminal).sendText === 'function' ? item as vscode.Terminal : undefined;
+  const keptTab = stopMeta?.keepTab ? (asTab ?? findTerminalForSession(name)) : undefined;
+  if (keptTab && !keptTab.exitStatus) {
+    try {
+      await tmux.parkSession(tmuxPath, name, label || name);
+      index.setSessionStopped(parsed.hash, name, true);
+      claudeTracker.forgetSession(name);
+      if (!keptTab.name.startsWith(PARKED_PREFIX)) await retitleTab(keptTab, PARKED_PREFIX + keptTab.name);
+      void syncActiveTerminalContext(index);
+      refreshSidebar();
+    } catch (e) {
+      vscode.window.showErrorMessage(`Stop failed: ${String(e).slice(0, 200)}`);
+    }
+    return;
+  }
+
   try {
     await tmux.killSession(tmuxPath, name);
     const dead = findTerminalForSession(name);
@@ -2317,6 +2405,7 @@ async function cmdStart(
     if (!exists) await tmux.createDetachedSession(tmuxPath, name, startCwd);
     index.setSessionStopped(parsed.hash, name, false);
     const term = await openTerminalForSession(name, startCwd, index, true);
+    void syncActiveTerminalContext(index);
     if (term && claudeSessionId) {
       await sleep(SHELL_INIT_DELAY_MS);
       if (vscode.window.terminals.includes(term)) {
@@ -2531,8 +2620,15 @@ async function cmdReattachAll(
   let skippedLive = 0;
   let unresolved = 0;
   const queued = new Set<string>();
-  const toReattach: Array<{ session: SessionInfo; ghost: vscode.Terminal; softReconnect: boolean }> = [];
+  type Entry = { session: SessionInfo; ghost: vscode.Terminal; softReconnect: boolean; repark?: boolean };
+  const toReattach: Entry[] = [];
+  // Panel order, separators included: each recreated tab lands at the end of
+  // the list, so a separator among them is recreated in its turn too, or the
+  // sections would all collapse to the front.
+  const slots: Array<{ entry?: Entry; sep?: { tab: vscode.Terminal; label: string } }> = [];
   for (const term of vscode.window.terminals) {
+    const sepLabel = separatorLabel(term.name);
+    if (sepLabel !== undefined) { slots.push({ sep: { tab: term, label: sepLabel } }); continue; }
     const exited = !!term.exitStatus;
     // A reload-restored tab keeps showing the ⚠ "disconnected" badge but carries
     // NO exitStatus, and VS Code trims its creationOptions so shellArgs are gone.
@@ -2545,15 +2641,24 @@ async function cmdReattachAll(
     const name = await resolveTmuxNameForTerminalLive(term, index, cfg.sessionPrefix);
     const s = name ? byName.get(name) : undefined;
     if (!name || !s) { unresolved++; continue; }
-    if (s.stopped) { skippedStopped++; continue; }
+    // A stopped session with Keep Tab When Stopped keeps its place: attached
+    // again to its parked tmux session, or parked anew when tmux is gone
+    // (reboot). Nothing is resumed in it.
+    if (s.stopped && !s.keepTab) { skippedStopped++; continue; }
     if (queued.has(name)) continue;
     queued.add(name);
     // Soft reconnect: the tmux session is still alive with its program inside,
     // so `tmux attach` fully restores it. Skip the agent resume that would
     // otherwise type into a live TUI — resume stays reserved for exited ghosts
     // whose pane may have fallen back to a bare shell.
-    toReattach.push({ session: s, ghost: term, softReconnect: restoredDisconnected || live });
+    const entry: Entry = s.stopped
+      ? { session: s, ghost: term, softReconnect: true, repark: !s.parked }
+      : { session: s, ghost: term, softReconnect: restoredDisconnected || live };
+    toReattach.push(entry);
+    slots.push({ entry });
   }
+  // Separators before the first recreated tab stay where they are.
+  while (slots.length > 0 && slots[0].sep) slots.shift();
 
   if (toReattach.length === 0) {
     const parts: string[] = [includeLive ? 'No session terminals to re-attach.' : 'No ghost terminals to re-attach.'];
@@ -2590,7 +2695,17 @@ async function cmdReattachAll(
     ));
   }
 
-  for (const { session: s, ghost, softReconnect } of toReattach) {
+  let separators = 0;
+  for (const slot of slots) {
+    if (slot.sep) {
+      try {
+        await disposeAndWait(slot.sep.tab, 500);
+        openSeparator(slot.sep.label);
+        separators++;
+      } catch (e) { console.error('[terminal-sessions] reattach separator failed:', e); }
+      continue;
+    }
+    const { session: s, ghost, softReconnect, repark } = slot.entry!;
     try {
       // Dispose the ghost first so its slot is freed before we createTerminal
       // again — otherwise tmux sees a stale client briefly and the new tab
@@ -2598,6 +2713,10 @@ async function cmdReattachAll(
       await disposeAndWait(ghost, 500);
       const meta = index.getSessionMeta(s.workspaceHash, s.name);
       const cwd = meta?.folderPath || s.workspacePath;
+      if (repark) {
+        if (!(await tmux.hasSession(tmuxPath, s.name))) await tmux.createDetachedSession(tmuxPath, s.name, cwd);
+        await tmux.parkSession(tmuxPath, s.name, s.label || s.name);
+      }
       const term = await openTerminalForSession(s.name, cwd, index, true);
       if (!term) { failed++; continue; }
       attached++;
@@ -2678,6 +2797,7 @@ async function cmdReattachAll(
     `Re-attached ${attached}/${toReattach.length} session${toReattach.length === 1 ? '' : 's'}`,
   ];
   if (resumed > 0) parts.push(`auto-resumed Claude in ${resumed}`);
+  if (separators > 0) parts.push(`${separators} separator${separators === 1 ? '' : 's'} kept in place`);
   if (skippedLive > 0) parts.push(`${skippedLive} already live`);
   if (unresolved > 0) parts.push(`${unresolved} unrecognized`);
   if (failed > 0) parts.push(`${failed} failed`);

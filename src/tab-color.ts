@@ -52,12 +52,14 @@ const TERMINAL_SCHEME = 'vscode-terminal';
 const COLORS = {
   working: new vscode.ThemeColor('terminal.ansiMagenta'),
   turn: new vscode.ThemeColor('terminal.ansiGreen'),
+  stopped: new vscode.ThemeColor('disabledForeground'),
 } as const;
 const TOOLTIPS = {
   working: 'Agent working',
   done: 'Agent finished: your turn',
   waiting: 'Agent is waiting for you',
   failed: 'Agent turn failed: your turn',
+  stopped: 'Session stopped: Start brings it back in this tab',
 } as const;
 /** Coalesces the re-query once the id set becomes complete. */
 const REFIRE_MS = 200;

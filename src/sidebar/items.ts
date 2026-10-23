@@ -317,7 +317,7 @@ export class SessionTreeItem extends vscode.TreeItem {
       // A stopped session still carries the flags Start will relaunch with, so a
       // yolo one must say so BEFORE the click — clicking this row runs Start
       // directly, with no confirmation anywhere on that path.
-      this.description = `${session.favorite ? '★ ' : ''}stopped · idle ${ageHint}${session.locked ? ' · 🔒' : ''}`
+      this.description = `${session.favorite ? '★ ' : ''}stopped${session.parked ? ' · tab kept' : ''} · idle ${ageHint}${session.locked ? ' · 🔒' : ''}`
         + (session.yolo ? ' · 🚨' : '');
       this.collapsibleState = vscode.TreeItemCollapsibleState.None;
       this.resourceUri = vscode.Uri.parse(
@@ -877,6 +877,26 @@ export class KilledFolderItem extends vscode.TreeItem {
     this.description = String(entries.length);
     this.contextValue = 'killedFolder';
     this.tooltip = 'Recently killed sessions. Right-click one to restore it (with its conversation). Right-click this folder (or the view\'s ⋯ menu) to disable.';
+  }
+}
+
+/** "Sessions": every group and ungrouped session of a workspace, below the
+ *  pinned folders, so a collapsed workspace stays a handful of rows. Counts
+ *  match the workspace row's. */
+export class SessionsFolderItem extends vscode.TreeItem {
+  constructor(
+    public readonly workspaceHash: string,
+    allSessions: SessionInfo[],
+  ) {
+    super('Sessions', vscode.TreeItemCollapsibleState.Expanded);
+    this.id = `sesf:${workspaceHash}`;
+    this.iconPath = new vscode.ThemeIcon('folder-library');
+    const stopped = allSessions.filter(s => s.stopped).length;
+    const active = allSessions.filter(s => !s.stopped && s.attached).length;
+    const detached = allSessions.filter(s => !s.stopped && !s.attached).length;
+    this.description = formatGroupCounts(active, detached, stopped);
+    this.contextValue = 'sessionsFolder';
+    this.tooltip = 'All groups and sessions of this workspace. Drop a session or group here to move it out of its group.';
   }
 }
 

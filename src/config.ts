@@ -59,6 +59,7 @@ export interface Config {
   showBackgroundFolder: boolean;
   showActivityFolder: boolean;
   showKilledFolder: boolean;
+  showSessionsFolder: boolean;
   activityLimit: number;
   killedLimit: number;
   tabStateText: TabStateTextMode;
@@ -143,6 +144,7 @@ export function getConfig(): Config {
     showBackgroundFolder: c.get('showBackgroundFolder', true),
     showActivityFolder: c.get('showActivityFolder', true),
     showKilledFolder: c.get('showKilledFolder', true),
+    showSessionsFolder: c.get('showSessionsFolder', true),
     activityLimit: Math.max(1, c.get<number>('activityLimit', 50)),
     killedLimit: Math.max(1, c.get<number>('killedLimit', 50)),
     tabStateText: c.get<string>('tabStateText', 'on') === 'off' ? 'off' : 'on',
@@ -191,6 +193,9 @@ export const COMMAND = {
   favoriteOff: 'terminalSessions.favoriteOff',
   toggleFavorite: 'terminalSessions.toggleFavorite',
   lockSession: 'terminalSessions.lockSession',
+  keepTabOn: 'terminalSessions.keepTabOn',
+  keepTabOff: 'terminalSessions.keepTabOff',
+  toggleKeepTab: 'terminalSessions.toggleKeepTab',
   unlockSession: 'terminalSessions.unlockSession',
   lockedHint: 'terminalSessions.lockedHint',
   newPersistent: 'terminalSessions.newPersistent',

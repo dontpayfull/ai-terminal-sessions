@@ -275,6 +275,7 @@ class TabStateWriter {
   constructor(
     private readonly ctx: vscode.ExtensionContext,
     private readonly tracker: ClaudeTracker,
+    private readonly isParked: (session: string) => boolean,
   ) {
     this.colors = new TabColorDecorations(ctx.workspaceState);
   }
@@ -352,7 +353,10 @@ class TabStateWriter {
         const snap = this.tracker.getSnapshot(p.session);
         const kind = tabStateKind(snap, now, clear, clearAfterMs).kind;
         // The name colour needs no tmux client: it is drawn by VS Code itself.
-        if (kind === 'working' || progressFor(kind) === PROGRESS.error) {
+        // A parked session (stopped, tab kept) is greyed.
+        if (this.isParked(p.session)) {
+          marked.set(p.session, { term, kind: 'stopped', why: 'stopped' });
+        } else if (kind === 'working' || progressFor(kind) === PROGRESS.error) {
           const why = kind as 'working' | 'waiting' | 'done' | 'failed';
           marked.set(p.session, { term, kind: kind === 'working' ? 'working' : 'turn', why });
         }
@@ -558,8 +562,12 @@ export async function maybeOfferDescriptionTemplate(ctx: vscode.ExtensionContext
   }
 }
 
-export function registerTabState(ctx: vscode.ExtensionContext, tracker: ClaudeTracker): void {
-  const writer = new TabStateWriter(ctx, tracker);
+export function registerTabState(
+  ctx: vscode.ExtensionContext,
+  tracker: ClaudeTracker,
+  isParked: (session: string) => boolean = () => false,
+): void {
+  const writer = new TabStateWriter(ctx, tracker, isParked);
   writer.start();
   ctx.subscriptions.push({ dispose: () => writer.dispose() });
   // The one-time offer runs from the startup prompt queue (extension.ts).
