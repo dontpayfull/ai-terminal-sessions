@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { execFile } from 'child_process';
-import { SEPARATOR_PROFILE_ID } from './config';
+import { COMMAND, SEPARATOR_PROFILE_ID } from './config';
 
 /**
  * Separator tabs: named dividers in the native terminal tab list, dragged
@@ -96,6 +96,14 @@ export async function isSeparator(t: vscode.Terminal): Promise<boolean> {
   return result;
 }
 
+function askSeparatorLabel(token?: vscode.CancellationToken): Thenable<string | undefined> {
+  return vscode.window.showInputBox({
+    title: 'Add Session Separator',
+    prompt: 'Name shown on the separator tab. Empty for a plain line. Drag the tab to place it.',
+    placeHolder: 'e.g. Research',
+  }, token);
+}
+
 export function registerSeparators(ctx: vscode.ExtensionContext): void {
   let lastReal: vscode.Terminal | undefined;
   const alive = (t: vscode.Terminal | undefined): t is vscode.Terminal =>
@@ -138,15 +146,21 @@ export function registerSeparators(ctx: vscode.ExtensionContext): void {
         if (process.platform === 'win32') {
           throw new Error('Separator tabs need a POSIX shell (macOS, Linux, WSL or Remote-SSH).');
         }
-        const label = await vscode.window.showInputBox({
-          title: 'Add Separator',
-          prompt: 'Name shown on the separator tab. Empty for a plain line. Drag the tab to place it.',
-          placeHolder: 'e.g. Research',
-        }, token);
+        const label = await askSeparatorLabel(token);
         // A profile provider cannot decline without the panel reporting an
         // error, so Esc adds a plain line too; closing the tab removes it.
         return new vscode.TerminalProfile(separatorOptions(label ?? ''));
       },
+    }),
+    // The same from the tab menu or the palette, where Esc can cancel. The
+    // tab still lands at the end of the list: the API cannot place it.
+    vscode.commands.registerCommand(COMMAND.addSeparator, async () => {
+      if (process.platform === 'win32') {
+        void vscode.window.showWarningMessage('Separator tabs need a POSIX shell (macOS, Linux, WSL or Remote-SSH).');
+        return;
+      }
+      const label = await askSeparatorLabel();
+      if (label !== undefined) openSeparator(label);
     }),
     vscode.window.onDidChangeActiveTerminal(t => { void note(t); }),
   );

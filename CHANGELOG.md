@@ -4,6 +4,16 @@ All notable changes to the Terminal Sessions extension.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project uses semantic versioning once past 1.0.0.
 
+## [0.37.0] — 2026-10-25
+
+### Added
+
+- **Add Session Separator** in the tab right-click menu (and the Command Palette). Same as the `+ ∨` entry; Esc cancels. The new separator still opens at the end of the list, ready to drag.
+
+### Fixed
+
+- Starting a stopped session no longer shows it as working (spinner, purple) for up to five minutes. Resuming touches the transcript without starting a turn, so the row stays idle until you send a prompt.
+
 ## [0.36.1] — 2026-10-23
 
 ### Changed

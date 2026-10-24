@@ -193,6 +193,7 @@ export const COMMAND = {
   favoriteOff: 'terminalSessions.favoriteOff',
   toggleFavorite: 'terminalSessions.toggleFavorite',
   lockSession: 'terminalSessions.lockSession',
+  addSeparator: 'terminalSessions.addSeparator',
   keepTabOn: 'terminalSessions.keepTabOn',
   keepTabOff: 'terminalSessions.keepTabOff',
   toggleKeepTab: 'terminalSessions.toggleKeepTab',

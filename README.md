@@ -279,7 +279,8 @@ from where you are typing.
 ### Separators in the tab list
 
 A long tab list reads better in sections. Pick **Session Separator** from
-the `+ ∨` dropdown, type a name (or leave it empty for a plain line)
+the `+ ∨` dropdown (or **Add Session Separator** from a tab's
+right-click menu), type a name (or leave it empty for a plain line)
 and drag the new tab where the section starts.
 
 ```

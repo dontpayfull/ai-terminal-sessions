@@ -734,6 +734,13 @@ export class ClaudeTracker {
           && (hookPrompt > localCommandAt
             || hookPrompt > Math.max(raw.lastStopAt?.getTime() ?? 0, raw.lastStartAt?.getTime() ?? 0));
         const localCommandDone = tu > ta && localCommandAt >= tu && !turnInFlight;
+        // A relaunch (Start, `--resume`) appends bookkeeping lines to the old
+        // transcript, so its mtime turns fresh with nothing in flight. While the
+        // SessionStart is newer than every message and no prompt followed it,
+        // the run is sitting at the prompt.
+        const startAt = raw.lastStartAt?.getTime() ?? 0;
+        const quietSinceStart = startAt > 0 && hookAtOrAfter(startAt, Math.max(tu, ta))
+          && hookPrompt < startAt;
 
         if (snap.state !== 'tool' && (snap.state !== 'waiting' || waitingIsStale)) {
           if (localCommandDone) {
@@ -784,6 +791,8 @@ export class ClaudeTracker {
               // flight and keep a later /model or /clear spinning.
               if (snap.lastStopAt && (!raw.lastStopAt || raw.lastStopAt < snap.lastStopAt)) raw.lastStopAt = snap.lastStopAt;
             }
+          } else if (quietSinceStart) {
+            snap.state = 'idle';
           } else if (tu > 0 && tu > ta) {
             // User message is the most recent activity. Two distinct shapes:
             //  - Live prompt: user just typed, Claude is about to start →
