@@ -28,6 +28,7 @@ import type { AgentProvider, AgentId } from './agents/types';
 import type { TerminalTracker } from './terminal-tracker';
 import { setAsDefaultProfile, restorePreviousDefaultProfile } from './default-profile';
 import { separatorLabel, openSeparator } from './separator';
+import { registerTagCommands } from './tag-commands';
 
 /** Delay between opening the attached terminal and sending `claude --resume`,
  *  giving the shell time to finish rc/zshrc init. Heavy zsh setups (oh-my-zsh,
@@ -236,11 +237,11 @@ export function registerCommands(
     vscode.commands.registerCommand(COMMAND.newPersistent, () => cmdNewPersistent(index)),
     vscode.commands.registerCommand(COMMAND.newPersistentInFolder, (uri?: vscode.Uri) => cmdNewPersistent(index, uri)),
     vscode.commands.registerCommand(COMMAND.attachTo, (item?: SessionTreeItem) => cmdAttachTo(index, item)),
-    vscode.commands.registerCommand(COMMAND.kill, (item?: SessionTreeItem | vscode.Terminal, selection?: vscode.TreeItem[]) => {
+    registerTabBulk(index, COMMAND.kill, (item?: SessionTreeItem | vscode.Terminal, selection?: vscode.TreeItem[]) => {
       const many = selectionTargets(selection);
       return many ? cmdKillMany(index, claudeTracker, many) : cmdKill(index, claudeTracker, item);
     }),
-    vscode.commands.registerCommand(COMMAND.killDelete, (item?: SessionTreeItem | vscode.Terminal, selection?: vscode.TreeItem[]) => {
+    registerTabBulk(index, COMMAND.killDelete, (item?: SessionTreeItem | vscode.Terminal, selection?: vscode.TreeItem[]) => {
       const many = selectionTargets(selection);
       return many
         ? cmdKillDeleteMany(index, claudeTracker, registry, many)
@@ -267,11 +268,11 @@ export function registerCommands(
     vscode.commands.registerCommand(COMMAND.testNotification, () => cmdTestNotification()),
     vscode.commands.registerCommand(COMMAND.installClaudeHook, () => cmdInstallClaudeHook(claudeTracker)),
     vscode.commands.registerCommand(COMMAND.uninstallClaudeHook, () => cmdUninstallClaudeHook(registry)),
-    vscode.commands.registerCommand(COMMAND.restart, (item?: SessionTreeItem | vscode.Terminal, selection?: vscode.TreeItem[]) => {
+    registerTabBulk(index, COMMAND.restart, (item?: SessionTreeItem | vscode.Terminal, selection?: vscode.TreeItem[]) => {
       const many = selectionTargets(selection);
       return many ? cmdRestartMany(index, registry, claudeTracker, many) : cmdRestart(index, registry, claudeTracker, item);
     }),
-    vscode.commands.registerCommand(COMMAND.switchToYolo, async (item?: SessionTreeItem | vscode.Terminal, selection?: vscode.TreeItem[]) => {
+    registerTabBulk(index, COMMAND.switchToYolo, async (item?: SessionTreeItem | vscode.Terminal, selection?: vscode.TreeItem[]) => {
       // Bulk YOLO stays deliberately per-session: each row runs the full
       // single-session flow with its own confirmation — auto-approve is too
       // sharp for one blanket "yes" over N sessions.
@@ -280,7 +281,7 @@ export function registerCommands(
       // eslint-disable-next-line no-await-in-loop
       for (const r of many) await cmdSwitchYolo(index, registry, claudeTracker, true, r);
     }),
-    vscode.commands.registerCommand(COMMAND.switchToNormal, async (item?: SessionTreeItem | vscode.Terminal, selection?: vscode.TreeItem[]) => {
+    registerTabBulk(index, COMMAND.switchToNormal, async (item?: SessionTreeItem | vscode.Terminal, selection?: vscode.TreeItem[]) => {
       const many = selectionTargets(selection);
       if (!many) return cmdSwitchYolo(index, registry, claudeTracker, false, item);
       // eslint-disable-next-line no-await-in-loop
@@ -288,7 +289,7 @@ export function registerCommands(
     }),
     vscode.commands.registerCommand(COMMAND.toggleYolo, (item?: SessionTreeItem | vscode.Terminal) => cmdSwitchYolo(index, registry, claudeTracker, undefined, item)),
     vscode.commands.registerCommand(COMMAND.toggleCoPane, (item?: SessionTreeItem | vscode.Terminal) => cmdToggleCoPane(index, registry, claudeTracker, item)),
-    vscode.commands.registerCommand(COMMAND.stop, async (item?: SessionTreeItem | vscode.Terminal, selection?: vscode.TreeItem[]) => {
+    registerTabBulk(index, COMMAND.stop, async (item?: SessionTreeItem | vscode.Terminal, selection?: vscode.TreeItem[]) => {
       const many = selectionTargets(selection);
       if (!many) return cmdStop(index, claudeTracker, item);
       for (const r of many) {
@@ -298,10 +299,18 @@ export function registerCommands(
       }
     }),
     // One Stop that keeps the tab this time, without turning Keep Tab on.
-    vscode.commands.registerCommand(COMMAND.stopKeepTab, (item?: SessionTreeItem | vscode.Terminal) => cmdStop(index, claudeTracker, item, true)),
+    registerTabBulk(index, COMMAND.stopKeepTab, async (item?: SessionTreeItem | vscode.Terminal, selection?: vscode.TreeItem[]) => {
+      const many = selectionTargets(selection);
+      if (!many) return cmdStop(index, claudeTracker, item, true);
+      for (const r of many) {
+        if (r.session.stopped) continue;
+        // eslint-disable-next-line no-await-in-loop
+        await cmdStop(index, claudeTracker, r, true);
+      }
+    }),
     vscode.commands.registerCommand(COMMAND.forkConversation, (item?: SessionTreeItem | vscode.Terminal) => cmdForkConversation(index, registry, claudeTracker, item)),
     vscode.commands.registerCommand(COMMAND.unlinkBranch, (item?: SessionTreeItem) => cmdUnlinkBranch(index, item)),
-    vscode.commands.registerCommand(COMMAND.start, async (item?: SessionTreeItem | vscode.Terminal, selection?: vscode.TreeItem[]) => {
+    registerTabBulk(index, COMMAND.start, async (item?: SessionTreeItem | vscode.Terminal, selection?: vscode.TreeItem[]) => {
       const many = selectionTargets(selection);
       // From a parked tab's menu: the tab names the session.
       if (item && typeof (item as vscode.Terminal).sendText === 'function') {
@@ -331,11 +340,11 @@ export function registerCommands(
     vscode.commands.registerCommand(COMMAND.toggleAllAlerts, () => cmdSetAllAlerts(ctx)),
     vscode.commands.registerCommand(COMMAND.alertsEnable, () => cmdSetAllAlerts(ctx, true)),
     vscode.commands.registerCommand(COMMAND.alertsDisable, () => cmdSetAllAlerts(ctx, false)),
-    vscode.commands.registerCommand(COMMAND.muteSession, (item?: SessionTreeItem | vscode.Terminal, selection?: vscode.TreeItem[]) => cmdSetSessionMuted(index, item, selection, true)),
-    vscode.commands.registerCommand(COMMAND.unmuteSession, (item?: SessionTreeItem | vscode.Terminal, selection?: vscode.TreeItem[]) => cmdSetSessionMuted(index, item, selection, false)),
-    vscode.commands.registerCommand(COMMAND.alertOnDoneOn, (item?: SessionTreeItem | vscode.Terminal, selection?: vscode.TreeItem[]) => cmdSetSessionAlertOnDone(index, item, selection, true)),
-    vscode.commands.registerCommand(COMMAND.alertOnDoneOff, (item?: SessionTreeItem | vscode.Terminal, selection?: vscode.TreeItem[]) => cmdSetSessionAlertOnDone(index, item, selection, false)),
-    vscode.commands.registerCommand(COMMAND.dismissAttention, async (item?: SessionTreeItem | vscode.Terminal, selection?: vscode.TreeItem[]) => {
+    registerTabBulk(index, COMMAND.muteSession, (item?: SessionTreeItem | vscode.Terminal, selection?: vscode.TreeItem[]) => cmdSetSessionMuted(index, item, selection, true)),
+    registerTabBulk(index, COMMAND.unmuteSession, (item?: SessionTreeItem | vscode.Terminal, selection?: vscode.TreeItem[]) => cmdSetSessionMuted(index, item, selection, false)),
+    registerTabBulk(index, COMMAND.alertOnDoneOn, (item?: SessionTreeItem | vscode.Terminal, selection?: vscode.TreeItem[]) => cmdSetSessionAlertOnDone(index, item, selection, true)),
+    registerTabBulk(index, COMMAND.alertOnDoneOff, (item?: SessionTreeItem | vscode.Terminal, selection?: vscode.TreeItem[]) => cmdSetSessionAlertOnDone(index, item, selection, false)),
+    registerTabBulk(index, COMMAND.dismissAttention, async (item?: SessionTreeItem | vscode.Terminal, selection?: vscode.TreeItem[]) => {
       // Works from any row (incl. mirror rows in the pinned folders), in bulk,
       // and from the terminal tab's own menu.
       const rows = selectionTargets(selection);
@@ -358,20 +367,25 @@ export function registerCommands(
     }),
     vscode.commands.registerCommand(COMMAND.favoriteOn, (item?: SessionTreeItem, selection?: vscode.TreeItem[]) => cmdSetSessionFavorite(index, item, selection, true)),
     vscode.commands.registerCommand(COMMAND.favoriteOff, (item?: SessionTreeItem, selection?: vscode.TreeItem[]) => cmdSetSessionFavorite(index, item, selection, false)),
-    vscode.commands.registerCommand(COMMAND.toggleFavorite, (item?: SessionTreeItem | vscode.Terminal) => cmdToggleFavorite(index, item)),
-    vscode.commands.registerCommand(COMMAND.lockSession, (item?: SessionTreeItem | vscode.Terminal, selection?: vscode.TreeItem[]) => {
+    registerTabBulk(index, COMMAND.toggleFavorite, (item?: SessionTreeItem | vscode.Terminal, selection?: vscode.TreeItem[]) => {
+      // Several tabs: all follow the clicked one, so a mixed set ends up uniform.
+      const many = selectionTargets(selection);
+      if (!many) return cmdToggleFavorite(index, item);
+      return cmdSetSessionFavorite(index, many[0], many, !many[0].session.favorite);
+    }),
+    registerTabBulk(index, COMMAND.lockSession, (item?: SessionTreeItem | vscode.Terminal, selection?: vscode.TreeItem[]) => {
       const many = selectionTargets(selection);
       if (!many) return cmdSetSessionLocked(index, item, true);
       bulkApply(many, (hash, name) => index.setSessionLocked(hash, name, true), n => `${n} sessions locked (protected from Kill).`);
     }),
-    vscode.commands.registerCommand(COMMAND.unlockSession, (item?: SessionTreeItem | vscode.Terminal, selection?: vscode.TreeItem[]) => {
+    registerTabBulk(index, COMMAND.unlockSession, (item?: SessionTreeItem | vscode.Terminal, selection?: vscode.TreeItem[]) => {
       const many = selectionTargets(selection);
       if (!many) return cmdSetSessionLocked(index, item, false);
       bulkApply(many, (hash, name) => index.setSessionLocked(hash, name, false), n => `${n} sessions unlocked.`);
     }),
     vscode.commands.registerCommand(COMMAND.lockedHint, (item?: SessionTreeItem) => cmdLockedHint(item)),
-    vscode.commands.registerCommand(COMMAND.keepTabOn, (item?: SessionTreeItem | vscode.Terminal, selection?: vscode.TreeItem[]) => cmdSetKeepTab(index, item, selection, true)),
-    vscode.commands.registerCommand(COMMAND.keepTabOff, (item?: SessionTreeItem | vscode.Terminal, selection?: vscode.TreeItem[]) => cmdSetKeepTab(index, item, selection, false)),
+    registerTabBulk(index, COMMAND.keepTabOn, (item?: SessionTreeItem | vscode.Terminal, selection?: vscode.TreeItem[]) => cmdSetKeepTab(index, item, selection, true)),
+    registerTabBulk(index, COMMAND.keepTabOff, (item?: SessionTreeItem | vscode.Terminal, selection?: vscode.TreeItem[]) => cmdSetKeepTab(index, item, selection, false)),
     vscode.commands.registerCommand(COMMAND.toggleKeepTab, (item?: SessionTreeItem | vscode.Terminal, selection?: vscode.TreeItem[]) => cmdSetKeepTab(index, item, selection, undefined)),
     vscode.commands.registerCommand(COMMAND.openSubagentTranscript, (item?: SubagentTreeItem) => cmdOpenSubagentTranscript(item)),
     vscode.commands.registerCommand(COMMAND.viewConversation, (arg?: SessionTreeItem | vscode.Terminal | { transcriptPath: string; title?: string }) => cmdViewConversation(index, registry, claudeTracker, arg)),
@@ -379,6 +393,17 @@ export function registerCommands(
     vscode.commands.registerCommand(COMMAND.toggleShowCompletedSubagents, () => cmdToggleShowCompletedSubagents()),
     vscode.commands.registerCommand(COMMAND.collapseSessions, () => collapseAllSessions()),
     vscode.commands.registerCommand(COMMAND.reattachAll, () => cmdReattachAll(index, registry, claudeTracker)),
+    ...registerTagCommands(index, {
+      start: name => cmdStart(index, registry, claudeTracker, undefined, name),
+      stop: session => cmdStop(index, claudeTracker, new SessionTreeItem(session, undefined, 'off', 0)),
+      targets: async (item, selection) => {
+        const many = selectionTargets(selection);
+        if (many) return many.map(r => r.session);
+        const one = await resolveSessionInfoFromInvocation(item, index);
+        return one ? [one] : [];
+      },
+      registerTabBulk: (id, run) => registerTabBulk(index, id, run),
+    }),
     vscode.commands.registerCommand(COMMAND.reattachAllTerminals, () => cmdReattachAll(index, registry, claudeTracker, true)),
     vscode.commands.registerCommand(COMMAND.restartAll, () => cmdRestartAll(index, registry, claudeTracker)),
     vscode.commands.registerCommand(COMMAND.newGroup, (item?: WorkspaceTreeItem | GroupTreeItem) => cmdNewGroup(index, item)),
@@ -1545,6 +1570,37 @@ function selectionTargets(selection: vscode.TreeItem[] | undefined): SessionTree
   return [...seen.values()];
 }
 
+/** A right-click on several selected terminal tabs runs the command with
+ *  (clicked tab, every selected tab). Resolve 2+ session tabs to session rows,
+ *  so the command takes the same bulk path as a sidebar multi-selection.
+ *  Tabs that are not sessions (separators, plain shells) drop out. */
+function withTabSelection<T>(
+  index: SessionIndex,
+  run: (item?: SessionTreeItem | vscode.Terminal, selection?: vscode.TreeItem[]) => T,
+): (item?: SessionTreeItem | vscode.Terminal, selection?: readonly unknown[]) => Promise<T> {
+  return async (item, selection) => {
+    const tabs = (selection ?? []).filter(
+      (t): t is vscode.Terminal => typeof (t as vscode.Terminal | undefined)?.sendText === 'function',
+    );
+    if (tabs.length < 2) return run(item, selection as vscode.TreeItem[] | undefined);
+    const rows: SessionTreeItem[] = [];
+    for (const t of tabs) {
+      // eslint-disable-next-line no-await-in-loop
+      const info = await resolveSessionInfoFromInvocation(t, index);
+      if (info) rows.push(new SessionTreeItem(info, undefined, 'off', 0));
+    }
+    return rows.length >= 2 ? run(rows[0], rows) : run(rows[0] ?? item, undefined);
+  };
+}
+
+function registerTabBulk(
+  index: SessionIndex,
+  id: string,
+  run: (item?: SessionTreeItem | vscode.Terminal, selection?: vscode.TreeItem[]) => unknown,
+): vscode.Disposable {
+  return vscode.commands.registerCommand(id, withTabSelection(index, run));
+}
+
 /** Apply a per-session index mutation over a multi-selection, then refresh
  *  once and report once. Backs the simple bulk actions (mute, lock, icon,
  *  color, group) where the operation itself cannot fail per session. */
@@ -1613,6 +1669,7 @@ async function resolveSessionInfoFromInvocation(
     alertOnDone: meta?.alertOnDone,
     favorite: meta?.favorite,
     locked: meta?.locked,
+    tags: index.tagNames(meta?.tags),
     // A tab is a live session, unless it is a parked one.
     stopped: Boolean(meta?.stopped && meta?.parked),
     parked: Boolean(meta?.stopped && meta?.parked),

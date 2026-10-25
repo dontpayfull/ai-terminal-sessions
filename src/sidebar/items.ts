@@ -332,6 +332,7 @@ export class SessionTreeItem extends vscode.TreeItem {
       if (session.folderPath && session.folderPath !== session.workspacePath) {
         parts.push(`Folder (session cwd): \`${session.folderPath}\``);
       }
+      if (session.tags?.length) parts.push(`Tags: ${session.tags.map(t => `\`#${t}\``).join(' ')}`);
       parts.push(`Created: ${session.createdAt.toLocaleString()}`);
       if (claude?.sessionId) {
         parts.push(`Last Claude session: \`${claude.sessionId.slice(0, 8)}…\` (will auto-resume on Start)`);
@@ -467,6 +468,7 @@ export class SessionTreeItem extends vscode.TreeItem {
     if (session.folderPath && session.folderPath !== session.workspacePath) {
       parts.push(`Folder (session cwd): \`${session.folderPath}\``);
     }
+    if (session.tags?.length) parts.push(`Tags: ${session.tags.map(t => `\`#${t}\``).join(' ')}`);
     parts.push(
       `Created: ${session.createdAt.toLocaleString()}`,
       `Last attached: ${session.lastAttached.toLocaleString()}`,

@@ -52,10 +52,12 @@ first session.
 ```
 
 1. **Toolbar,** left to right: filter this list as you type, change the
-   filter mode, new session, re-attach ghost terminals, mute or unmute every
+   filter mode, new session, re-attach all terminals (every session tab,
+   the orange ones after a restart too), mute or unmute every
    notification, search every past conversation on the machine, resume from
    archive, collapse all. The `⋯` menu holds the sort mode, *Where
-   Notifications Appear…*, the cleanup tool, switches for each pinned folder,
+   Notifications Appear…*, *Save Open Tabs as Tag…*, the cleanup tool,
+   switches for each pinned folder,
    and the terminal-tab marks (on/off, and whether a mark clears when seen or
    after 15, 30, 45, 60, 90 or a custom number of minutes).
 2. **Workspace.** One per project, with a count badge: `12⏸` stopped, then the
@@ -159,8 +161,8 @@ tinted, and an icon or colour you picked stays as it is. A yellow name
 with a `⚠` at the end of the row is VS Code's own "relaunch needed"
 warning (some extension changed the terminal environment); on a tab the
 extension colours, the name and the `⚠` take the agent colour instead.
-**Re-attach All Terminals** in the `⋯` menu clears the warning without
-stopping anything. After *Restart Extensions* (not a window reload), the
+**Re-attach All Terminals** (the ↻ in the toolbar) clears the warning
+without stopping anything. After *Restart Extensions* (not a window reload), the
 tabs that were already open stay uncoloured until the next reload: their
 order can no longer be matched safely. The same goes for the tabs a
 window opens with when one of them sits in the editor area. And since
@@ -190,6 +192,7 @@ orders them by VS Code's group names, so the vertical order differs).
  ├─ Organize ───────────────────────────────────────┤
  │ Add to / Remove from Favorites                    │
  │ Move to Group…                                    │
+ │ Tag…                                              │
  │ Rename…                                           │
  │ Change Icon… / Change Color…                      │
  │ Mute / Unmute Notifications                       │
@@ -248,6 +251,7 @@ place of **Kill Session**.
  │ Rename…                       (VS Code's own)     │
  ├───────────────────────────────────────────────────┤
  │ Add/Remove Favorite                               │
+ │ Tag…                                              │
  │ Switch to YOLO Mode (auto-approve)                │
  │ Switch to Normal Mode (ask before acting)         │
  │ Mute / Unmute Notifications                       │
@@ -270,6 +274,14 @@ place of **Kill Session**.
  │ Restart Session (kill + fresh shell)              │
  └───────────────────────────────────────────────────┘
 ```
+
+Cmd/Ctrl- or Shift-click several tabs, then right-click one of them,
+and the session actions apply to every selected tab: Stop, Stop
+Session Keep Tab, Start, Restart, Kill, Kill & Delete Data, YOLO /
+Normal, Mute / Unmute, Alert When Done, Mark as Seen, Lock / Unlock,
+Keep Tab When Stopped and Add/Remove Favorite (all selected tabs
+follow the clicked one). Kill confirms once for the batch. The other
+entries (reveal, copy, View Conversation) act on the clicked tab.
 
 Right-clicking inside the terminal body offers **Add/Remove Favorite**, the
 reveal actions (the selected path in Finder / Explorer, the session folder,
@@ -338,6 +350,49 @@ from the tab's menu instead; the setting stays as it was:
   the tab order may need a drag
 - **Close Tab When Stopped** turns it off; the other sessions keep the
   usual behaviour
+
+### Tags: start and stop a set of sessions together
+
+A tag names a set of sessions, and a session can carry several. Use one
+for the sessions of one piece of work: close them all at the end of the
+day, open them all again tomorrow, in the same order.
+
+```
+ ▾ 🏷 Tags
+   ▾ 🏷 #research        5 · 4⏸ · 1▶        ▶ ■
+       ── Sources ──
+       ■ Competitors     stopped
+       ■ Pricing         stopped
+       ── Drafts ──
+       ⟳ Outline         working 2m
+       ■ Intro           stopped
+```
+
+- **Tag them.** Select sessions in the sidebar or tabs in the panel
+  (Cmd/Ctrl- or Shift-click), right-click, **Tag…**. Check existing tags
+  or type a new name and press Enter. Unchecking a tag removes it
+- **Or save what is open.** **Save Open Tabs as Tag…** (the `+` on the
+  Tags folder, the `⋯` menu or the palette) puts every session tab in a
+  tag, separators included. On an existing name it asks whether to
+  replace its sessions or add to them
+- **▶ Start All** starts the stopped ones and opens a tab for those
+  running in the background, in the tag's order, with each separator
+  above its section. A separator already open is not opened again. It
+  asks first when more than three sessions would open
+- **■ Stop All** stops the running ones (asking first above three) and
+  then closes the tag's separator tabs
+- **The order is the tag's own.** VS Code does not tell an extension
+  how you dragged the tabs, so the tag keeps its order: it starts as the
+  tabs' order (the order they were opened in, or restored in after a
+  reload) and you change it by dragging rows inside the tag. Drop any
+  session on a tag row to add it. **Add Separator to Tag…** adds a
+  section; right-click a separator row to remove it
+- Right-click a tag to rename or delete it. Deleting leaves the sessions
+  as they are
+- Type `#research` in the sidebar filter to list a tag's sessions; a
+  session's tooltip names its tags
+- Tags are shared by every workspace. A killed session keeps its tags
+  and is back in them after Restore
 
 ### One Rename
 
@@ -457,7 +512,7 @@ Three moving pieces, each independent, composed to give you a persistent and obs
 - **Restart session** (with agent auto-resume) — kill the current tmux session (any program in it, incl. Claude Code) and respawn a fresh shell; keeps the label, icon, color, and workspace. If Claude was running, the extension auto-detects its session ID, verifies the transcript is still on disk, and runs `claude --resume <id>` in the new shell. Conversation context survives, Ink renderer state is clean
 - **Smart click behavior** — clicking a session that's already attached focuses its existing terminal tab instead of opening a duplicate
 - **Right-click context menu** on sidebar items — Add/Remove Favorites, View Conversation, Restart, Stop/Start, Move to Group, Rename, Icon, Color, Mute notifications, Lock/Unlock, Kill, Kill & Delete Data
-- **Multi-select + bulk actions** — Cmd/Ctrl- or Shift-click several session rows, then right-click: Stop, Start, Kill, Kill & Delete Data, Restart, Move to Group, Change Icon/Color, Mute/Unmute, Lock/Unlock and Add/Remove Favorites all apply to the whole selection. Destructive ones ask once for the batch (Kill & Delete Data shows the combined size); locked rows are always kept; the YOLO switch stays per-session on purpose
+- **Multi-select + bulk actions** — Cmd/Ctrl- or Shift-click several session rows, then right-click: Stop, Start, Kill, Kill & Delete Data, Restart, Move to Group, Change Icon/Color, Mute/Unmute, Lock/Unlock and Add/Remove Favorites all apply to the whole selection. Destructive ones ask once for the batch (Kill & Delete Data shows the combined size); locked rows are always kept; the YOLO switch stays per-session on purpose. The same works on several selected terminal tabs
 - **Explorer right-click → "Open in Integrated Terminal - Persistent"** — on any folder, opens a persistent tmux session rooted at that folder. The VS Code tab description reflects the actual folder name, not the workspace root
 
 ### Clickable paths & links in the terminal
@@ -491,6 +546,7 @@ Two extra link detectors on top of VS Code's built-in one. Both read the **rende
 - Toggle via the `$(list-ordered)` icon in the sidebar title bar; dragging automatically switches to Custom
 
 ### Favorite, Open (Active/Background), Recent & Killed sessions (pinned folders)
+- **Tags** — sets of sessions that start and stop together, a session can carry several; ▶ Start All / ■ Stop All on the tag row, order and separators kept. See [Tags](#tags-start-and-stop-a-set-of-sessions-together)
 - **Favorite Sessions** — star any session with the ☆ button on its row (hover; one click to add, one to remove — the button becomes a filled star on starred rows, and a `★` shows in the row description). Starred sessions appear in a pinned **Favorite Sessions** folder above Recent Sessions. Rows mirror the real sessions — every action works. Hidden while empty. Also available from a terminal tab's right-click menu (**Add/Remove Favorite**), and multi-select in the sidebar stars several sessions at once
 - **Open Sessions** — everything running, in two pinned folders:
   - **Active Sessions** — sessions currently open as terminal tabs in this window, in tab order. Tabs restored by a window reload (the ⚠ disconnected ones) are included too — their session is recovered from the live process
@@ -518,7 +574,7 @@ Two extra link detectors on top of VS Code's built-in one. Both read the **rende
 - **Filter modes** — show `all`, only `running`, or only `stopped` sessions via the `$(filter)` icon in the title bar (`terminalSessions.sidebarFilterMode`)
 - **Stop / Start a session** — pause a session (kills the tmux session but keeps the row, with its label, icon, color, and agent history) and start it again later, instead of killing it outright. Stopped rows get an inline `$(play)`
 - **Groups & master groups** — organize sessions under named groups, and groups under master groups, via right-click `New Group…` / `New Master Group…` / `Move to Group…`, with drag-and-drop and per-group rename/delete. Purely organizational; the underlying tmux sessions are untouched
-- **Re-attach All Ghost Terminals** — one click (`$(debug-restart)` in the title bar) revives the orange/disconnected tabs you get after a Cursor restart, in sidebar order
+- **Re-attach All Terminals** — one click (`$(debug-restart)` in the title bar) reconnects every session tab in panel order, so the orange/disconnected tabs you get after a Cursor restart come back too. tmux keeps running; only each tab's connection is new, so the agents carry on
 - **Reveal Session Folder** — right-click → open the session's working directory in the OS file manager (Finder/Explorer), or jump to its row from the terminal tab via `Reveal in Terminal Sessions View`
 - **Copy Last Conversation ID / Path** — right-click → put the most recent agent conversation's UUID, or the full path to its transcript `.jsonl`, on the clipboard (resolves through whichever agent the session is running, so it works for all four)
 

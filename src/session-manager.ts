@@ -7,6 +7,7 @@ import { isForkableAgent, yoloFlagsFor, yoloSpecFor } from './agents/registry';
 import * as tmux from './tmux';
 import { parseSessionName } from './workspace-id';
 import { noteStore } from './notes';
+import { TagDef, TagLayoutItem } from './tags';
 
 /** Number of contributed branch-chip theme colors (terminalSessions.branchColor1..N).
  *  New sets cycle through them round-robin. Keep in sync with contributes.colors. */
@@ -239,6 +240,93 @@ export class SessionIndex {
 
   isSessionFavorite(hash: string, sessionName: string): boolean {
     return this.data.workspaces[hash]?.sessions[sessionName]?.favorite === true;
+  }
+
+  // ── Tags (global; members carry the ids, see tags.ts) ──────────────────
+
+  getTags(): Record<string, TagDef> {
+    return this.data.tags ?? {};
+  }
+
+  /** The tag with this name (case-insensitive), or a new one. Returns its id. */
+  ensureTag(name: string): string {
+    this.reloadIfChanged();
+    const tags = this.data.tags ?? (this.data.tags = {});
+    const found = Object.entries(tags).find(([, t]) => t.name.toLowerCase() === name.toLowerCase());
+    if (found) return found[0];
+    let id = '';
+    for (let attempt = 0; attempt < 100 && (!id || tags[id]); attempt++) {
+      id = 't_' + Math.random().toString(36).slice(2, 6);
+    }
+    if (tags[id]) id = 't_' + Date.now().toString(36);
+    tags[id] = { name };
+    this.save();
+    return id;
+  }
+
+  renameTag(id: string, name: string): void {
+    this.reloadIfChanged();
+    const t = this.data.tags?.[id];
+    if (!t) return;
+    t.name = name;
+    this.save();
+  }
+
+  setTagLayout(id: string, layout: TagLayoutItem[]): void {
+    this.reloadIfChanged();
+    const t = this.data.tags?.[id];
+    if (!t) return;
+    if (layout.length > 0) t.layout = layout;
+    else delete t.layout;
+    this.save();
+  }
+
+  /** Removes the tag and takes it off every session, the killed ones too. */
+  deleteTag(id: string): void {
+    this.reloadIfChanged();
+    if (!this.data.tags?.[id]) return;
+    delete this.data.tags[id];
+    if (Object.keys(this.data.tags).length === 0) delete this.data.tags;
+    for (const ws of Object.values(this.data.workspaces)) {
+      for (const meta of [...Object.values(ws.sessions), ...(ws.killed ?? []).map(k => k.meta)]) {
+        dropTag(meta, id);
+      }
+    }
+    this.save();
+  }
+
+  /** Adds or removes one tag on several sessions in one write. A tag no
+   *  session carries any more (live or killed) is deleted. */
+  setSessionsTagged(targets: Array<{ hash: string; name: string }>, id: string, on: boolean): void {
+    this.reloadIfChanged();
+    if (!this.data.tags?.[id]) return;
+    for (const { hash, name } of targets) {
+      const meta = this.data.workspaces[hash]?.sessions[name];
+      if (!meta) continue;
+      if (on) {
+        if (!meta.tags?.includes(id)) meta.tags = [...(meta.tags ?? []), id];
+      } else dropTag(meta, id);
+    }
+    if (!on && !this.tagInUse(id)) {
+      delete this.data.tags[id];
+      if (Object.keys(this.data.tags).length === 0) delete this.data.tags;
+    }
+    this.save();
+  }
+
+  private tagInUse(id: string): boolean {
+    return Object.values(this.data.workspaces).some(ws =>
+      Object.values(ws.sessions).some(m => m.tags?.includes(id))
+      || (ws.killed ?? []).some(k => k.meta.tags?.includes(id)));
+  }
+
+  /** Names of the tags behind these ids, in tag-list order; unknown ids
+   *  (a tag deleted from another window) drop out. */
+  tagNames(ids: readonly string[] | undefined): string[] | undefined {
+    if (!ids?.length) return undefined;
+    const tags = this.data.tags ?? {};
+    const names = ids.filter(id => tags[id]).map(id => tags[id].name);
+    return names.length ? names : undefined;
   }
 
   setSessionLocked(hash: string, sessionName: string, locked: boolean): void {
@@ -592,6 +680,10 @@ export class SessionIndex {
     if (ws.killed.length === 0) delete ws.killed;
     const meta: SessionLabel = { ...entry.meta, stopped: true, stoppedAt: entry.killedAt };
     ws.sessions[name] = meta;
+    // Its tags came back with the snapshot; its place in their order follows.
+    for (const t of Object.values(this.data.tags ?? {})) {
+      for (const it of t.layout ?? []) if ('session' in it && it.session === killedName) it.session = name;
+    }
     this.save();
     return { name, meta };
   }
@@ -992,6 +1084,7 @@ export async function enrichSessions(
       alertOnDone: meta?.alertOnDone,
       favorite: meta?.favorite,
       locked: meta?.locked,
+      tags: index.tagNames(meta?.tags),
       // A live row is stopped only when parked: kept on its placeholder by a
       // Stop on a keep-tab session.
       stopped: Boolean(meta?.stopped && meta?.parked),
@@ -1053,6 +1146,7 @@ export async function enrichSessions(
         alertOnDone: meta.alertOnDone,
         favorite: meta.favorite,
         locked: meta.locked,
+        tags: index.tagNames(meta.tags),
         keepTab: meta.keepTab,
         stopped: true,
         stoppedAt: meta.stoppedAt ? new Date(meta.stoppedAt) : undefined,
@@ -1084,4 +1178,10 @@ export function groupByWorkspace(sessions: SessionInfo[]): Map<string, SessionIn
     map.set(s.workspaceHash, arr);
   }
   return map;
+}
+
+function dropTag(meta: SessionLabel, id: string): void {
+  if (!meta.tags?.includes(id)) return;
+  meta.tags = meta.tags.filter(t => t !== id);
+  if (meta.tags.length === 0) delete meta.tags;
 }

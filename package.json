@@ -539,7 +539,8 @@
       },
       {
         "command": "terminalSessions.reattachAllTerminals",
-        "title": "Re-attach All Terminals",
+        "title": "Re-attach All Terminals: reconnect every session tab in panel order, the orange ghost tabs after a restart included",
+        "shortTitle": "Re-attach All Terminals",
         "category": "Terminal Sessions",
         "icon": "$(debug-restart)"
       },
@@ -697,6 +698,49 @@
         "command": "terminalSessions.stopKeepTab",
         "title": "Stop Session, Keep Tab",
         "category": "Terminal Sessions"
+      },
+      {
+        "command": "terminalSessions.tagSessions",
+        "title": "Tag…",
+        "icon": "$(tag)"
+      },
+      {
+        "command": "terminalSessions.saveOpenAsTag",
+        "title": "Save Open Tabs as Tag…",
+        "category": "Terminal Sessions",
+        "icon": "$(add)"
+      },
+      {
+        "command": "terminalSessions.startTag",
+        "title": "Start All in Tag",
+        "category": "Terminal Sessions",
+        "icon": "$(play)"
+      },
+      {
+        "command": "terminalSessions.stopTag",
+        "title": "Stop All in Tag",
+        "category": "Terminal Sessions",
+        "icon": "$(debug-stop)"
+      },
+      {
+        "command": "terminalSessions.renameTag",
+        "title": "Rename Tag…",
+        "category": "Terminal Sessions"
+      },
+      {
+        "command": "terminalSessions.deleteTag",
+        "title": "Delete Tag…",
+        "category": "Terminal Sessions",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "terminalSessions.addTagSeparator",
+        "title": "Add Separator to Tag…",
+        "category": "Terminal Sessions"
+      },
+      {
+        "command": "terminalSessions.removeTagSeparator",
+        "title": "Remove Separator"
       },
       {
         "command": "terminalSessions.forkConversation",
@@ -1205,6 +1249,18 @@
         {
           "command": "terminalSessions.keepTabOff",
           "when": "false"
+        },
+        {
+          "command": "terminalSessions.reattachAll",
+          "when": "false"
+        },
+        {
+          "command": "terminalSessions.tagSessions",
+          "when": "false"
+        },
+        {
+          "command": "terminalSessions.removeTagSeparator",
+          "when": "false"
         }
       ],
       "explorer/context": [
@@ -1386,6 +1442,10 @@
           "command": "terminalSessions.keepTabOff",
           "when": "terminalSessions.activeTerminalKeepTab",
           "group": "8_restart@0.5"
+        },
+        {
+          "command": "terminalSessions.tagSessions",
+          "group": "4_session@0.5"
         }
       ],
       "view/title": [
@@ -1425,7 +1485,7 @@
           "group": "navigation@2"
         },
         {
-          "command": "terminalSessions.reattachAll",
+          "command": "terminalSessions.reattachAllTerminals",
           "when": "view == terminalSessions.sessions",
           "group": "navigation@3.5"
         },
@@ -1445,7 +1505,7 @@
           "group": "navigation@5"
         },
         {
-          "command": "terminalSessions.reattachAllTerminals",
+          "command": "terminalSessions.saveOpenAsTag",
           "when": "view == terminalSessions.sessions",
           "group": "1_maintenance@0"
         },
@@ -1870,6 +1930,61 @@
           "command": "terminalSessions.newMasterGroup",
           "when": "view == terminalSessions.sessions && viewItem == sessionsFolder",
           "group": "navigation@1"
+        },
+        {
+          "command": "terminalSessions.tagSessions",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session(?!sFolder)/",
+          "group": "edit@0.5"
+        },
+        {
+          "command": "terminalSessions.saveOpenAsTag",
+          "when": "view == terminalSessions.sessions && viewItem == tagsFolder",
+          "group": "inline@1"
+        },
+        {
+          "command": "terminalSessions.saveOpenAsTag",
+          "when": "view == terminalSessions.sessions && viewItem == tagsFolder",
+          "group": "1_tag@1"
+        },
+        {
+          "command": "terminalSessions.startTag",
+          "when": "view == terminalSessions.sessions && viewItem == tag",
+          "group": "inline@1"
+        },
+        {
+          "command": "terminalSessions.stopTag",
+          "when": "view == terminalSessions.sessions && viewItem == tag",
+          "group": "inline@2"
+        },
+        {
+          "command": "terminalSessions.startTag",
+          "when": "view == terminalSessions.sessions && viewItem == tag",
+          "group": "1_tag@1"
+        },
+        {
+          "command": "terminalSessions.stopTag",
+          "when": "view == terminalSessions.sessions && viewItem == tag",
+          "group": "1_tag@2"
+        },
+        {
+          "command": "terminalSessions.addTagSeparator",
+          "when": "view == terminalSessions.sessions && viewItem == tag",
+          "group": "2_tag@1"
+        },
+        {
+          "command": "terminalSessions.renameTag",
+          "when": "view == terminalSessions.sessions && viewItem == tag",
+          "group": "2_tag@2"
+        },
+        {
+          "command": "terminalSessions.deleteTag",
+          "when": "view == terminalSessions.sessions && viewItem == tag",
+          "group": "3_tag@1"
+        },
+        {
+          "command": "terminalSessions.removeTagSeparator",
+          "when": "view == terminalSessions.sessions && viewItem == tagSeparator",
+          "group": "1_tag@1"
         }
       ],
       "terminal/tab/context": [

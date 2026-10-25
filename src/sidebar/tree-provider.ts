@@ -8,6 +8,8 @@ import { shouldShowCleanupNotice, readClaudeCleanupDays, countExpiringTranscript
 import { sessionNameForTerminal, resolveTmuxNameForTerminalLive } from '../profile-provider';
 import { SessionInfo } from '../types';
 import { ClaudeTracker } from '../claude-tracker';
+import { TagsFolderItem, TagTreeItem, TagSeparatorItem, TagView, tagMemberPrefix, tagOfMemberRow } from './tag-items';
+import { tagEntries, toLayout, layoutKey, moveInLayout } from '../tags';
 
 const DRAG_MIME = 'application/vnd.code.tree.terminalsessions';
 
@@ -223,7 +225,10 @@ class SessionsTreeProvider
     if (el instanceof ActiveFolderItem || el instanceof BackgroundFolderItem) {
       return this.lastOpenParents.get(el.workspaceHash) ?? this.lastWorkspaceItems.get(el.workspaceHash);
     }
-    if (el instanceof OpenFolderItem || el instanceof FavoritesFolderItem
+    if (el instanceof TagTreeItem) {
+      return this.lastTagFolders.get(el.workspaceHash) ?? this.lastWorkspaceItems.get(el.workspaceHash);
+    }
+    if (el instanceof OpenFolderItem || el instanceof FavoritesFolderItem || el instanceof TagsFolderItem
       || el instanceof ActivityFolderItem || el instanceof KilledFolderItem
       || el instanceof NotesFolderItem || el instanceof SessionsFolderItem) {
       return this.lastWorkspaceItems.get(el.workspaceHash);
@@ -330,6 +335,21 @@ class SessionsTreeProvider
   // Same purpose for the Notes folder: getParent() must hand reveal() the exact
   // container instance a note row lives in.
   private lastNotesFolders = new Map<string, NotesFolderItem>();
+  // Same for the Tags folder, the parent of every tag row.
+  private lastTagFolders = new Map<string, TagsFolderItem>();
+
+  /** Every tag with a member in this workspace, by name. Entries span all
+   *  workspaces (a tag is global) so separator positions match the tag's
+   *  full order; rendering keeps this workspace's sessions only. */
+  private tagViews(hash: string, all: SessionInfo[]): TagView[] {
+    const views: TagView[] = [];
+    for (const [id, def] of Object.entries(this.index.getTags())) {
+      const members = all.filter(s => this.index.getSessionMeta(s.workspaceHash, s.name)?.tags?.includes(id));
+      if (!members.some(s => s.workspaceHash === hash)) continue;
+      views.push({ id, name: def.name, entries: tagEntries(def.layout, members) });
+    }
+    return views.sort((a, b) => a.name.localeCompare(b.name));
+  }
 
   private async resolveOpenName(t: vscode.Terminal): Promise<string | undefined> {
     const hit = this.openNameCache.get(t);
@@ -346,6 +366,7 @@ class SessionsTreeProvider
     hash: string,
     allWsSessions: SessionInfo[],
     cfg: ReturnType<typeof getConfig>,
+    allSessions: SessionInfo[],
   ): Promise<vscode.TreeItem[]> {
     const out: vscode.TreeItem[] = [];
     // Notes sits above everything else: it's the only folder that is empty
@@ -372,6 +393,13 @@ class SessionsTreeProvider
     if (cfg.showFavoritesFolder) {
       const favs = activityOrder(allWsSessions.filter(s => s.favorite));
       if (favs.length > 0) out.push(new FavoritesFolderItem(hash, favs));
+    }
+    this.lastTagFolders.delete(hash);
+    const tags = this.tagViews(hash, allSessions);
+    if (tags.length > 0) {
+      const folder = new TagsFolderItem(hash, tags);
+      this.lastTagFolders.set(hash, folder);
+      out.push(folder);
     }
     if (cfg.showOpenFolder || cfg.showBackgroundFolder) {
       // Sessions with a terminal tab open in THIS window, in panel order.
@@ -614,7 +642,8 @@ class SessionsTreeProvider
           ? this.index.getWorkspace(s.workspaceHash)?.groups?.[s.groupId]?.name
           : undefined;
         const matches = filtered.filter(s => {
-          const hay = [s.label, s.name, s.folderPath, s.workspacePath, s.workspaceLabel, groupNameOf(s)]
+          const hay = [s.label, s.name, s.folderPath, s.workspacePath, s.workspaceLabel, groupNameOf(s),
+            ...(s.tags ?? []).map(t => `#${t}`)]
             .filter(Boolean).join(' ').toLowerCase();
           return this.textFilterTokens.every(t => hay.includes(t));
         });
@@ -690,7 +719,7 @@ class SessionsTreeProvider
       // Root container: top-level masters + top-level normal groups + ungrouped
       // sessions, all sharing one sortOrder pool (interleaved via drag-drop).
       const allWsSessions = sessions.filter(s => s.workspaceHash === el.workspaceHash);
-      const pinned = await this.specialFolders(el.workspaceHash, allWsSessions, cfg);
+      const pinned = await this.specialFolders(el.workspaceHash, allWsSessions, cfg, sessions);
       this.lastSessionsFolders.delete(el.workspaceHash);
       // Decided without rendering the rows: renderContainer caches every row it
       // builds for reveal(), and rows built here but never shown (the folder is
@@ -721,6 +750,20 @@ class SessionsTreeProvider
         item.id = `fav:${item.id}`;
         return item;
       });
+    }
+    if (el instanceof TagsFolderItem) return el.tags.map(t => new TagTreeItem(el.workspaceHash, t));
+    if (el instanceof TagTreeItem) {
+      // Mirror rows (full actions, uncached, own id prefix) and the separators,
+      // in tag order; only this workspace's sessions.
+      const out: vscode.TreeItem[] = [];
+      el.tag.entries.forEach((e, i) => {
+        if ('separator' in e) { out.push(new TagSeparatorItem(el.workspaceHash, el.tag.id, e.separator, i)); return; }
+        if (e.session.workspaceHash !== el.workspaceHash) return;
+        const item = this.makeSessionItem(e.session, cfg, false, false);
+        item.id = `${tagMemberPrefix(el.tag.id)}${item.id}`;
+        out.push(item);
+      });
+      return out;
     }
     if (el instanceof OpenFolderItem) return [el.active, el.background];
     if (el instanceof ActiveFolderItem) {
@@ -848,10 +891,13 @@ class SessionsTreeProvider
   ): Promise<void> {
     interface DragSession { kind: 'session'; hash: string; name: string }
     interface DragGroup { kind: 'group'; hash: string; groupId: string }
-    type Payload = DragSession | DragGroup;
+    interface DragTagSeparator { kind: 'tagSep'; hash: string; tagId: string; position: number }
+    type Payload = DragSession | DragGroup | DragTagSeparator;
     const payload: Payload[] = [];
     for (const i of source) {
-      if (i instanceof SessionTreeItem) {
+      if (i instanceof TagSeparatorItem) {
+        payload.push({ kind: 'tagSep', hash: i.workspaceHash, tagId: i.tagId, position: i.position });
+      } else if (i instanceof SessionTreeItem) {
         payload.push({ kind: 'session', hash: i.session.workspaceHash, name: i.session.name });
       } else if (i instanceof GroupTreeItem) {
         payload.push({ kind: 'group', hash: i.workspaceHash, groupId: i.groupId });
@@ -883,9 +929,21 @@ class SessionsTreeProvider
     if (!item) return;
     interface DragSession { kind: 'session'; hash: string; name: string }
     interface DragGroup { kind: 'group'; hash: string; groupId: string }
-    type Payload = DragSession | DragGroup;
+    interface DragTagSeparator { kind: 'tagSep'; hash: string; tagId: string; position: number }
+    type Payload = DragSession | DragGroup | DragTagSeparator;
     const raw = item.value as Payload[];
     if (!Array.isArray(raw) || raw.length === 0) return;
+    // Inside a tag: add and reorder in the tag's own order, nothing else moves.
+    const tagTarget = target instanceof TagTreeItem ? { tagId: target.tag.id, key: undefined }
+      : target instanceof TagSeparatorItem ? { tagId: target.tagId, key: `p:${target.position}` }
+        : target instanceof SessionTreeItem && tagOfMemberRow(target.id)
+          ? { tagId: tagOfMemberRow(target.id)!, key: `s:${target.session.name}` }
+          : undefined;
+    if (tagTarget) {
+      await this.dropOnTag(tagTarget.tagId, tagTarget.key, raw as unknown as Array<{ kind: string; hash: string; name?: string; tagId?: string; position?: number }>);
+      return;
+    }
+    if (!raw.some(r => r.kind === 'session' || r.kind === 'group')) return;
     // The "Sessions" folder holds the workspace root: a drop on it is a drop there.
     if (target instanceof SessionsFolderItem) target = this.lastWorkspaceItems.get(target.workspaceHash);
 
@@ -1041,6 +1099,7 @@ class SessionsTreeProvider
     // multi-select drag preserves the user's pick order.
     const draggedInOrder: Child[] = [];
     for (const r of raw) {
+      if (r.kind === 'tagSep') continue;
       const k = r.kind === 'session' ? `s:${r.name}` : `g:${r.groupId}`;
       const c = draggedChildren.find(x => x.key === k);
       if (c) draggedInOrder.push(c);
@@ -1063,6 +1122,38 @@ class SessionsTreeProvider
         2500,
       );
     }
+    this.refresh();
+  }
+
+  /** A drop inside a tag: dragged sessions join it, dragged separators of
+   *  this tag move; all land at the target row (after it when dragging
+   *  down, as in the groups above), or at the end on the tag row itself. */
+  private async dropOnTag(
+    tagId: string,
+    targetKey: string | undefined,
+    raw: Array<{ kind: string; hash: string; name?: string; tagId?: string; position?: number }>,
+  ): Promise<void> {
+    const def = this.index.getTags()[tagId];
+    if (!def) return;
+    const cfg = getConfig();
+    const tmuxPath = await tmux.detectTmuxPath(cfg.tmuxPath);
+    if (!tmuxPath) return;
+    const added = raw.filter(r => r.kind === 'session' && r.name).map(r => ({ hash: r.hash, name: r.name! }));
+    this.index.setSessionsTagged(added, tagId, true);
+    const all = await enrichSessions(tmuxPath, cfg.sessionPrefix, this.index);
+    const members = all.filter(s => this.index.getSessionMeta(s.workspaceHash, s.name)?.tags?.includes(tagId));
+    const full = toLayout(tagEntries(def.layout, members));
+    const keys = raw.flatMap(r => (r.kind === 'session' && r.name ? [`s:${r.name}`]
+      : r.kind === 'tagSep' && r.tagId === tagId && typeof r.position === 'number' ? [`p:${r.position}`] : []));
+    if (keys.length === 0) return;
+    let before = targetKey;
+    const keyAt = (i: number): string => layoutKey(full, i);
+    const tIdx = targetKey ? full.findIndex((_, i) => keyAt(i) === targetKey) : -1;
+    const firstMoved = full.findIndex((_, i) => keys.includes(keyAt(i)));
+    if (tIdx >= 0 && firstMoved >= 0 && firstMoved < tIdx) {
+      before = tIdx + 1 < full.length ? keyAt(tIdx + 1) : undefined;
+    }
+    this.index.setTagLayout(tagId, moveInLayout(full, keys, before));
     this.refresh();
   }
 }

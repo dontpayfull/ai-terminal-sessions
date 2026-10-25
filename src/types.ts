@@ -1,4 +1,5 @@
 import type { AgentId } from './agents/types';
+import type { TagDef } from './tags';
 
 /** One AI-agent session that ran in a tmux session, tagged by which CLI it
  *  belongs to. Replaces the Claude-only history with an agent-aware list. */
@@ -26,6 +27,7 @@ export interface SessionInfo {
   alertOnDone?: boolean;  // when true, a finish plays the alert sound and opens a dialog
   favorite?: boolean;  // when true, session shows in the Favorite Sessions folder (star toggle)
   locked?: boolean;  // when true, the session is protected from Kill (padlock shown; unlock to remove)
+  tags?: string[];  // names of the tags it carries (tooltip, filter)
   /** Stop parks the session instead of ending it: its tmux session stays on an
    *  idle placeholder so the terminal tab keeps its place, greyed and marked ⏸. */
   keepTab?: boolean;
@@ -64,6 +66,9 @@ export interface WorkspaceIndex {
   // Friendly names for agent sessions (any agent), keyed by sessionId. Sidecar
   // only — Claude's own transcript files are never modified for naming.
   sessionNames?: Record<string, { name: string; ts: number }>;
+  // Session tags, keyed by short random id (renaming keeps the links). Global:
+  // one list of names for every workspace. Members carry the ids in `tags`.
+  tags?: Record<string, TagDef>;
 }
 
 export interface WorkspaceEntry {
@@ -146,6 +151,9 @@ export interface SessionLabel {
   // When true, the session is starred: listed in the pinned "Favorite Sessions"
   // folder and marked with a ★ on its row. Toggled by the inline star action.
   favorite?: boolean;
+  // Ids of the tags this session carries (see WorkspaceIndex.tags). Kept in
+  // the graveyard snapshot, so a restored session is back in its tags.
+  tags?: string[];
   // When true, this session is protected from Kill: the destructive Kill action is
   // hidden in the sidebar and refused by the command, guarding against accidental
   // removal. Toggled via right-click Lock/Unlock. A 🔒 hint is shown on the row.

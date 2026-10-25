@@ -4,6 +4,17 @@ All notable changes to the Terminal Sessions extension.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project uses semantic versioning once past 1.0.0.
 
+## [Unreleased]
+
+### Added
+
+- **Tags.** A session can carry several. Select sessions or tabs, right-click, **Tag…**; or **Save Open Tabs as Tag…** to put every open session tab in one, separators included. Each tag gets a row in a new **Tags** folder with **▶ Start All** (stopped sessions start, background ones get a tab, in the tag's order with its separators; asks first above three) and **■ Stop All** (also closes the tag's separators). Drag rows inside a tag to reorder, drop a session on it to add it, add or remove separators, rename or delete it. `#name` in the sidebar filter lists a tag's sessions.
+- **Bulk actions on terminal tabs**: select several tabs (Cmd/Ctrl- or Shift-click), right-click, and Stop, Stop Session Keep Tab, Start, Restart, Kill, Kill & Delete Data, YOLO / Normal, Mute, Alert When Done, Mark as Seen, Lock, Keep Tab When Stopped and Add/Remove Favorite apply to every selected session tab, as on a sidebar multi-selection. Separators and plain shells in the selection are skipped.
+
+### Changed
+
+- The toolbar's re-attach button is now **Re-attach All Terminals**: it reconnects every session tab, the orange ghost tabs after a restart included, so the ghost-only variant is gone from the toolbar. Its tooltip says what it does.
+
 ## [0.38.0] — 2026-10-25
 
 ### Added
