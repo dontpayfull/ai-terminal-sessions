@@ -73,6 +73,9 @@ message = pick(data, "message")
 # tags every one (permission / question); Claude and agy send none, and the
 # tracker falls back to reading the message text for those.
 kind = pick(data, "kind")
+# What launched a SessionStart (startup / resume / clear / compact), when the
+# agent says. A compaction restarts mid-turn, the others at an empty prompt.
+start_source = pick(data, "source")
 
 # Agent-team teammates and Task-tool subagents carry agent_id / agent_type on
 # their hook payloads; the main (lead) session never does. Forwarding agent_id
@@ -217,6 +220,8 @@ if out["tmuxSession"] and pane_pid > 1 and hook_pid > 1:
 # Only present when the hook states it — absent lines keep the old shape.
 if kind:
     out["kind"] = str(kind)[:32]
+if start_source and isinstance(start_source, str) and out["event"] == "SessionStart":
+    out["source"] = start_source[:16]
 
 # Only present for teammates/subagents — keep lead-session lines unchanged.
 if agent_id:

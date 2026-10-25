@@ -256,7 +256,7 @@ export const TerminalSessions = async ({ directory, client }) => {
       if (!lookups.delete(id)) return
       if (info && typeof info === "object" && info.id === id) {
         noteSession(info)
-        if (!isChild(id)) emit("SessionStart", { ...base(id), title: info.title || null, resumed: true })
+        if (!isChild(id)) emit("SessionStart", { ...base(id), title: info.title || null, resumed: true, source: "resume" })
       } else if (!parentOf.has(id)) {
         remember(parentOf, id, null)
       }

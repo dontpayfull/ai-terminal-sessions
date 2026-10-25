@@ -226,6 +226,7 @@ export const COMMAND = {
   toggleYolo: 'terminalSessions.toggleYolo',
   toggleCoPane: 'terminalSessions.toggleCoPane',
   stop: 'terminalSessions.stop',
+  stopKeepTab: 'terminalSessions.stopKeepTab',
   forkConversation: 'terminalSessions.forkConversation',
   unlinkBranch: 'terminalSessions.unlinkBranch',
   start: 'terminalSessions.start',

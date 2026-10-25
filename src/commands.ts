@@ -297,6 +297,8 @@ export function registerCommands(
         await cmdStop(index, claudeTracker, r);
       }
     }),
+    // One Stop that keeps the tab this time, without turning Keep Tab on.
+    vscode.commands.registerCommand(COMMAND.stopKeepTab, (item?: SessionTreeItem | vscode.Terminal) => cmdStop(index, claudeTracker, item, true)),
     vscode.commands.registerCommand(COMMAND.forkConversation, (item?: SessionTreeItem | vscode.Terminal) => cmdForkConversation(index, registry, claudeTracker, item)),
     vscode.commands.registerCommand(COMMAND.unlinkBranch, (item?: SessionTreeItem) => cmdUnlinkBranch(index, item)),
     vscode.commands.registerCommand(COMMAND.start, async (item?: SessionTreeItem | vscode.Terminal, selection?: vscode.TreeItem[]) => {
@@ -2268,6 +2270,7 @@ async function cmdStop(
   index: SessionIndex,
   claudeTracker: ClaudeTracker,
   item?: SessionTreeItem | vscode.Terminal,
+  keepTabOnce = false,
 ): Promise<void> {
   const tmuxPath = await requireTmux();
   if (!tmuxPath) return;
@@ -2321,10 +2324,11 @@ async function cmdStop(
   const asTab = item && typeof (item as vscode.Terminal).sendText === 'function' ? item as vscode.Terminal : undefined;
   // Only a tab proven to be this session's: a `#<id>` name match could be
   // another workspace's tab, which would then get the ⏸.
-  const keptTab = stopMeta?.keepTab ? (asTab ?? await findVerifiedTabForSession(name)) : undefined;
+  const keepTab = keepTabOnce || Boolean(stopMeta?.keepTab);
+  const keptTab = keepTab ? (asTab ?? await findVerifiedTabForSession(name)) : undefined;
   const tabHere = Boolean(keptTab && !keptTab.exitStatus);
   // The tab may live in another window: a tmux client still attached says so.
-  const tabElsewhere = Boolean(stopMeta?.keepTab && !tabHere
+  const tabElsewhere = Boolean(keepTab && !tabHere
     && (await tmux.listSessions(tmuxPath, cfg.sessionPrefix).catch(() => [])).some(r => r.name === name && r.attached));
   if (tabHere || tabElsewhere) {
     try {

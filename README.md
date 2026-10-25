@@ -265,6 +265,7 @@ place of **Kill Session**.
  │ Kill Terminal                 (VS Code's own)     │
  ├───────────────────────────────────────────────────┤
  │ Stop Session (keep in sidebar)                    │
+ │ Stop Session, Keep Tab                            │
  │ Keep Tab When Stopped / Close Tab When Stopped    │
  │ Restart Session (kill + fresh shell)              │
  └───────────────────────────────────────────────────┘
@@ -316,7 +317,8 @@ and drag the new tab where the section starts.
 Normally **Stop** closes the session's tab. For the sessions you want to
 keep in view, right-click the tab and pick **Keep Tab When Stopped** (on
 a sidebar row: **Toggle Keep Tab When Stopped**). A Stop then keeps the
-tab where it is:
+tab where it is. For a single Stop, pick **Stop Session, Keep Tab**
+from the tab's menu instead; the setting stays as it was:
 
 ```
  my-app - Pricing #7

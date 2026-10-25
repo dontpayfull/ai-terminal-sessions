@@ -58,6 +58,8 @@ export interface ClaudeSnapshot {
   /** When the current run of the agent was launched (SessionStart). A stop that
    *  predates it belongs to a previous run. */
   lastStartAt?: Date;
+  /** The SessionStart's `source`, when the agent reports one. */
+  lastStartSource?: string;
   toolName?: string;
   toolInput?: string;
   toolSince?: Date;
@@ -152,6 +154,10 @@ interface ClaudeEvent {
    *  to be guessed from `message`. Our OpenCode plugin tags every one
    *  ('permission' | 'question'); Claude and agy send none. */
   kind?: string;
+  /** What launched a SessionStart: 'startup' | 'resume' | 'clear' | 'compact'
+   *  from Claude Code and Codex, 'resume' from OpenCode; absent for agents
+   *  that do not say. */
+  source?: string;
   /** Present only when the hook fired for an agent-team teammate or a Task-tool
    *  subagent. Claude Code attaches `agent_id`/`agent_type` to those payloads
    *  but NEVER to the main (lead) session's events, so the presence of
@@ -736,11 +742,16 @@ export class ClaudeTracker {
         const localCommandDone = tu > ta && localCommandAt >= tu && !turnInFlight;
         // A relaunch (Start, `--resume`) appends bookkeeping lines to the old
         // transcript, so its mtime turns fresh with nothing in flight. While the
-        // SessionStart is newer than every message and no prompt followed it,
-        // the run is sitting at the prompt.
+        // SessionStart is newer than every message and no prompt or tool hook
+        // followed it, the run is sitting at the prompt. Strictly newer: the
+        // hook stamp is floored to the second, so a message in that same second
+        // may be the first of a turn. Only for a start the agent says began at
+        // the prompt: a compaction restarts in the middle of a turn, and an
+        // agent that reports no source (agy, OpenCode) may have no prompt hook.
         const startAt = raw.lastStartAt?.getTime() ?? 0;
-        const quietSinceStart = startAt > 0 && hookAtOrAfter(startAt, Math.max(tu, ta))
-          && hookPrompt < startAt;
+        const quietSinceStart = startAt > Math.max(tu, ta) && hookPrompt < startAt
+          && raw.state !== 'working'
+          && ['startup', 'resume', 'clear'].includes(raw.lastStartSource ?? '');
 
         if (snap.state !== 'tool' && (snap.state !== 'waiting' || waitingIsStale)) {
           if (localCommandDone) {
@@ -793,6 +804,9 @@ export class ClaudeTracker {
             }
           } else if (quietSinceStart) {
             snap.state = 'idle';
+            // Settled, like a local command: a "working" read in the moment
+            // before the start's hook arrived is not a finished turn.
+            this.lastDerived.set(tmuxSession, 'idle');
           } else if (tu > 0 && tu > ta) {
             // User message is the most recent activity. Two distinct shapes:
             //  - Live prompt: user just typed, Claude is about to start →
@@ -1432,6 +1446,7 @@ export class ClaudeTracker {
       case 'SessionStart':
         snap.state = 'idle';
         snap.lastStartAt = new Date(tsMs);
+        snap.lastStartSource = e.source;
         // A (re)launch starts a fresh run: whatever the previous run left unread
         // is history now, not something the new run finished.
         if (Date.now() - tsMs < NOTIFY_STALE_MS) this.markSeen(e.tmuxSession);

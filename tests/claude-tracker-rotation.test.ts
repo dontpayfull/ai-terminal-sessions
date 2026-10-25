@@ -42,10 +42,16 @@ function event(tab: number): { id: string; line: string } {
   return { id, line };
 }
 
+/** Waits for `cond`, appending a blank line to the log now and then: macOS
+ *  drops folder events in the moment after the watch starts, and a blank
+ *  line (ignored by the tracker) makes it look again, as the next real event
+ *  would. */
 async function until(cond: () => boolean, ms = 3000): Promise<void> {
   const end = Date.now() + ms;
+  let nudge = Date.now() + 200;
   while (!cond()) {
     if (Date.now() > end) throw new Error('timed out');
+    if (Date.now() > nudge) { fs.appendFileSync(LOG, '\n'); nudge = Date.now() + 200; }
     await new Promise(r => setTimeout(r, 20));
   }
 }

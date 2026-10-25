@@ -4,6 +4,16 @@ All notable changes to the Terminal Sessions extension.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project uses semantic versioning once past 1.0.0.
 
+## [0.38.0] — 2026-10-25
+
+### Added
+
+- **Stop Session, Keep Tab** in the tab right-click menu: one Stop that keeps the tab (greyed, ⏸) without turning on Keep Tab When Stopped. It shows only while that setting is off, since a plain Stop already keeps the tab then.
+
+### Fixed
+
+- An automatic compaction in the middle of a turn no longer shows the turn as idle, and a short turn killed just before Start is no longer marked done. The idle-after-Start rule from 0.37.0 now applies only to a start the agent reports as a launch, resume or `/clear` (the hook forwards the SessionStart `source`; the OpenCode plugin now reports its resumes as `resume`), and only when the start is strictly newer than every message.
+
 ## [0.37.0] — 2026-10-25
 
 ### Added
