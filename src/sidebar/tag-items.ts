@@ -2,8 +2,8 @@ import * as vscode from 'vscode';
 import { SessionInfo } from '../types';
 import { TagEntry } from '../tags';
 
-/** One tag as the sidebar shows it under a workspace: its rows in tag order
- *  (only this workspace's members) and the counts for its badge. */
+/** One tag as the sidebar shows it under a workspace: its rows in tag order,
+ *  this workspace's members only (Start All and Stop All act on those). */
 export interface TagView {
   id: string;
   name: string;
@@ -58,11 +58,11 @@ export class TagSeparatorItem extends vscode.TreeItem {
     public readonly workspaceHash: string,
     public readonly tagId: string,
     public readonly label: string,
-    /** Its index in the tag's full order (TagLayoutItem[]), for a move. */
-    public readonly position: number,
+    /** Its id in the tag's order, for a move or a removal. */
+    public readonly sepId: string,
   ) {
     super(label ? `── ${label} ──` : '────────', vscode.TreeItemCollapsibleState.None);
-    this.id = `tagsep:${workspaceHash}:${tagId}:${position}`;
+    this.id = `tagsep:${workspaceHash}:${tagId}:${sepId}`;
     this.iconPath = new vscode.ThemeIcon('dash');
     this.contextValue = 'tagSeparator';
     this.tooltip = 'Separator tab. Start All opens it above the next sessions. Drag it to move it; right-click to remove it.';

@@ -370,17 +370,22 @@ day, open them all again tomorrow, in the same order.
 
 - **Tag them.** Select sessions in the sidebar or tabs in the panel
   (Cmd/Ctrl- or Shift-click), right-click, **Tag…**. Check existing tags
-  or type a new name and press Enter. Unchecking a tag removes it
+  or type a new name and press Enter. Unchecking a tag removes it; a tag
+  only some of them carry says so, and checking then unchecking it
+  removes it from all
 - **Or save what is open.** **Save Open Tabs as Tag…** (the `+` on the
   Tags folder, the `⋯` menu or the palette) puts every session tab in a
   tag, separators included. On an existing name it asks whether to
   replace its sessions or add to them
 - **▶ Start All** starts the stopped ones and opens a tab for those
   running in the background, in the tag's order, with each separator
-  above its section. A separator already open is not opened again. It
-  asks first when more than three sessions would open
-- **■ Stop All** stops the running ones (asking first above three) and
-  then closes the tag's separator tabs
+  above its section. A separator already open is not opened again, and
+  a session whose tab is open in another window is left there. It asks
+  first when more than three sessions would open
+- **■ Stop All** stops the running ones (asking first above three).
+  Once none of them has a tab left, it closes the separator tabs this
+  window opened or saved for the tag; one restored by a reload stays
+- Both act on the sessions of the workspace the tag row sits in
 - **The order is the tag's own.** VS Code does not tell an extension
   how you dragged the tabs, so the tag keeps its order: it starts as the
   tabs' order (the order they were opened in, or restored in after a

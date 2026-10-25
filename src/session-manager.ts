@@ -248,9 +248,12 @@ export class SessionIndex {
     return this.data.tags ?? {};
   }
 
-  /** The tag with this name (case-insensitive), or a new one. Returns its id. */
+  /** The tag with this name (case-insensitive), or a new one. Returns its id.
+   *  A tag nobody carries any more is dropped first, so an old name starts
+   *  fresh instead of bringing back a stale order. */
   ensureTag(name: string): string {
     this.reloadIfChanged();
+    this.dropUnusedTags();
     const tags = this.data.tags ?? (this.data.tags = {});
     const found = Object.entries(tags).find(([, t]) => t.name.toLowerCase() === name.toLowerCase());
     if (found) return found[0];
@@ -312,6 +315,41 @@ export class SessionIndex {
       if (Object.keys(this.data.tags).length === 0) delete this.data.tags;
     }
     this.save();
+  }
+
+  /** Deletes the tags no session carries, live or killed (Kill & Delete Data
+   *  and the graveyard cap take members away without a word to the tags). */
+  pruneUnusedTags(): void {
+    this.reloadIfChanged();
+    if (this.dropUnusedTags()) this.save();
+  }
+
+  private dropUnusedTags(): boolean {
+    let dropped = false;
+    for (const id of Object.keys(this.data.tags ?? {})) {
+      if (this.tagInUse(id)) continue;
+      delete this.data.tags![id];
+      dropped = true;
+    }
+    if (this.data.tags && Object.keys(this.data.tags).length === 0) delete this.data.tags;
+    return dropped;
+  }
+
+  /** Takes the tag off the killed sessions, so a Restore does not bring
+   *  them back into a tag that was replaced since. */
+  untagKilled(id: string): void {
+    this.reloadIfChanged();
+    for (const ws of Object.values(this.data.workspaces)) {
+      for (const k of ws.killed ?? []) dropTag(k.meta, id);
+    }
+    this.save();
+  }
+
+  /** Names of the killed sessions that carry the tag: their places in its
+   *  order are kept for Restore, though no row shows them. */
+  killedTagMembers(id: string): string[] {
+    return Object.values(this.data.workspaces)
+      .flatMap(ws => (ws.killed ?? []).filter(k => k.meta.tags?.includes(id)).map(k => k.name));
   }
 
   private tagInUse(id: string): boolean {
@@ -680,9 +718,13 @@ export class SessionIndex {
     if (ws.killed.length === 0) delete ws.killed;
     const meta: SessionLabel = { ...entry.meta, stopped: true, stoppedAt: entry.killedAt };
     ws.sessions[name] = meta;
-    // Its tags came back with the snapshot; its place in their order follows.
-    for (const t of Object.values(this.data.tags ?? {})) {
-      for (const it of t.layout ?? []) if ('session' in it && it.session === killedName) it.session = name;
+    // Its tags came back with the snapshot; its place in their order follows,
+    // unless a newer session reuses the old name and owns those slots now.
+    if (!ws.sessions[killedName]) {
+      for (const [id, t] of Object.entries(this.data.tags ?? {})) {
+        if (!meta.tags?.includes(id)) continue;
+        for (const it of t.layout ?? []) if ('session' in it && it.session === killedName) it.session = name;
+      }
     }
     this.save();
     return { name, meta };

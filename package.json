@@ -1933,7 +1933,7 @@
         },
         {
           "command": "terminalSessions.tagSessions",
-          "when": "view == terminalSessions.sessions && viewItem =~ /^session(?!sFolder)/",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session(\\.|$)/",
           "group": "edit@0.5"
         },
         {

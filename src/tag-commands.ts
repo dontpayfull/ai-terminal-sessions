@@ -6,11 +6,11 @@ import { SessionInfo } from './types';
 import { refreshSidebar } from './sidebar/tree-provider';
 import { SessionTreeItem } from './sidebar/items';
 import { TagTreeItem, TagSeparatorItem } from './sidebar/tag-items';
-import { findTerminalForSession, resolveTmuxNameForTerminalLive, sessionNameForTerminal } from './profile-provider';
-import { parseSessionName } from './workspace-id';
-import { separatorLabel, openSeparator } from './separator';
+import { findVerifiedTabForSession, resolveTmuxNameForTerminalLive, sessionNameForTerminal } from './profile-provider';
+import { currentWorkspace, parseSessionName } from './workspace-id';
+import { separatorLabel, openSeparator, isSeparator } from './separator';
 import {
-  TagLayoutItem, MemberAction, cleanTagName, tagEntries, toLayout, trimLayout, startPlan,
+  TagLayoutItem, MemberAction, cleanTagName, tagEntries, toLayout, trimLayout, startPlan, newSeparatorId,
 } from './tags';
 
 /** Start All and Stop All ask first above this many sessions. */
@@ -43,23 +43,58 @@ export function registerTagCommands(index: SessionIndex, deps: TagCommandDeps): 
 
 // ── helpers ────────────────────────────────────────────────────────────────
 
+/** Separator tabs this window opened or saved for a tag. Stop All closes
+ *  only these: a tab with the same label may head someone else's section.
+ *  Lost on a reload, when a restored separator simply stays open. */
+const ownedSeparators = new Map<string, Set<vscode.Terminal>>();
+
+function own(tagId: string, tabs: readonly vscode.Terminal[]): void {
+  if (tabs.length === 0) return;
+  const set = ownedSeparators.get(tagId) ?? new Set<vscode.Terminal>();
+  for (const t of tabs) set.add(t);
+  ownedSeparators.set(tagId, set);
+}
+
 async function allSessions(index: SessionIndex): Promise<SessionInfo[]> {
   const cfg = getConfig();
   const tmuxPath = await tmux.detectTmuxPath(cfg.tmuxPath);
   return tmuxPath ? enrichSessions(tmuxPath, cfg.sessionPrefix, index) : [];
 }
 
-function membersOf(index: SessionIndex, tagId: string, all: SessionInfo[]): SessionInfo[] {
-  return all.filter(s => index.getSessionMeta(s.workspaceHash, s.name)?.tags?.includes(tagId));
+/** The tag's live members, of one workspace when `hash` is set. */
+function membersOf(index: SessionIndex, tagId: string, all: SessionInfo[], hash?: string): SessionInfo[] {
+  return all.filter(s => (!hash || s.workspaceHash === hash)
+    && index.getSessionMeta(s.workspaceHash, s.name)?.tags?.includes(tagId));
 }
 
-/** The tag's whole order, every member placed (the same one the sidebar shows). */
+/** The tag's whole order to write back: every live member placed, and the
+ *  killed ones keep their slots for a Restore. */
 function fullLayout(index: SessionIndex, tagId: string, all: SessionInfo[]): TagLayoutItem[] {
-  return toLayout(tagEntries(index.getTags()[tagId]?.layout, membersOf(index, tagId, all)));
+  const members: Array<{ name: string }> = [
+    ...membersOf(index, tagId, all),
+    ...index.killedTagMembers(tagId).map(name => ({ name })),
+  ];
+  return toLayout(tagEntries(index.getTags()[tagId]?.layout, members));
+}
+
+/** The tag's name, or undefined when another window deleted it meanwhile. */
+function tagName(index: SessionIndex, id: string): string | undefined {
+  return index.getTags()[id]?.name;
+}
+
+function gone(): void {
+  vscode.window.showInformationMessage('That tag no longer exists (deleted in another window?).');
+  refreshSidebar();
 }
 
 function plural(n: number, word: string): string {
   return `${n} ${word}${n === 1 ? '' : 's'}`;
+}
+
+/** The workspace a tag command acts in: the tag row's own, else (palette)
+ *  this window's, else every workspace. */
+function scopeOf(item: TagTreeItem | undefined): string | undefined {
+  return item?.workspaceHash ?? currentWorkspace()?.hash;
 }
 
 /** The tag a menu row names, or one picked from the list. */
@@ -70,10 +105,12 @@ async function resolveTag(
   placeHolder: string,
 ): Promise<string | undefined> {
   if (item?.tag?.id) return index.getTags()[item.tag.id] ? item.tag.id : undefined;
+  index.pruneUnusedTags();
+  const hash = scopeOf(item);
   interface Pick extends vscode.QuickPickItem { id: string }
   const picks: Pick[] = Object.entries(index.getTags())
     .map(([id, t]) => {
-      const members = membersOf(index, id, all);
+      const members = membersOf(index, id, all, hash);
       const stopped = members.filter(s => s.stopped).length;
       return {
         id,
@@ -100,13 +137,16 @@ function validateName(index: SessionIndex, exceptId?: string) {
 
 // ── Tag… ───────────────────────────────────────────────────────────────────
 
-/** One picker that adds and removes: a tag every target has starts checked
- *  (uncheck to remove it), typing a new name offers to create it. */
+/** One picker that adds and removes. A tag every target has starts checked
+ *  (uncheck to remove it); one only some have says so, and checking then
+ *  unchecking it removes it from all. Typing filters; when nothing matches,
+ *  the text becomes a new tag, checked for Enter. */
 async function cmdTag(index: SessionIndex, targets: SessionInfo[]): Promise<void> {
   if (targets.length === 0) {
     vscode.window.showErrorMessage('Use the menu of a session row or a session tab.');
     return;
   }
+  index.pruneUnusedTags();
   interface Item extends vscode.QuickPickItem { id?: string; create?: string }
   const metaTags = targets.map(s => index.getSessionMeta(s.workspaceHash, s.name)?.tags ?? []);
   const existing: Item[] = Object.entries(index.getTags())
@@ -120,6 +160,7 @@ async function cmdTag(index: SessionIndex, targets: SessionInfo[]): Promise<void
     })
     .sort((a, b) => a.label.localeCompare(b.label));
   const initially = new Set(existing.filter(i => metaTags.every(ts => ts.includes(i.id!))).map(i => i.id!));
+  const partial = new Set(existing.filter(i => i.description).map(i => i.id!));
 
   const qp = vscode.window.createQuickPick<Item>();
   qp.canSelectMany = true;
@@ -128,25 +169,43 @@ async function cmdTag(index: SessionIndex, targets: SessionInfo[]): Promise<void
     : `Tag ${targets.length} sessions`;
   qp.placeholder = 'Check tags, or type a new name and press Enter';
   const checked = new Set(initially);
+  const touched = new Set<string>();
   let createItem: Item | undefined;
+  let createPicked = false;
+  let createDeclined = false;
   const render = (): void => {
     const name = cleanTagName(qp.value);
-    const known = existing.some(i => i.label.toLowerCase() === `$(tag) #${name}`.toLowerCase());
-    createItem = name && !known ? { label: `$(add) Create #${name}`, create: name, alwaysShow: true } : undefined;
+    const lower = name.toLowerCase();
+    const exact = existing.some(i => i.label.toLowerCase() === `$(tag) #${lower}`);
+    // Typing that still matches a tag is a search: offer the new name, unchecked.
+    const matches = lower !== '' && existing.some(i => i.label.toLowerCase().includes(lower));
+    createItem = name && !exact ? { label: `$(add) Create #${name}`, create: name, alwaysShow: true } : undefined;
+    if (!name) createDeclined = false;
     qp.items = createItem ? [createItem, ...existing] : existing;
-    qp.selectedItems = [...(createItem ? [createItem] : []), ...existing.filter(i => checked.has(i.id!))];
+    createPicked = Boolean(createItem && !matches && !createDeclined);
+    qp.selectedItems = [...(createPicked ? [createItem!] : []), ...existing.filter(i => checked.has(i.id!))];
   };
   qp.onDidChangeValue(render);
   qp.onDidChangeSelection(sel => {
-    // Track the user's checks across re-renders; the create row is not a tag yet.
+    // Only an uncheck of the row we checked is a "no": the events that echo
+    // our own selection carry it as it was set.
+    if (createItem && createPicked && !sel.includes(createItem)) { createDeclined = true; createPicked = false; }
     for (const i of existing) {
-      if (sel.includes(i)) checked.add(i.id!);
-      else if (qp.items.includes(i)) checked.delete(i.id!);
+      const on = sel.includes(i);
+      if (on !== checked.has(i.id!)) touched.add(i.id!);
+      if (on) checked.add(i.id!);
+      else checked.delete(i.id!);
     }
   });
   render();
   const accepted = await new Promise<readonly Item[] | undefined>(resolve => {
-    qp.onDidAccept(() => { resolve(qp.selectedItems); qp.hide(); });
+    qp.onDidAccept(() => {
+      // Typing a tag's exact name and pressing Enter means that tag.
+      const exact = existing.find(i => i.label.toLowerCase() === `$(tag) #${cleanTagName(qp.value).toLowerCase()}`);
+      if (exact && !touched.has(exact.id!)) checked.add(exact.id!);
+      resolve(qp.selectedItems);
+      qp.hide();
+    });
     qp.onDidHide(() => resolve(undefined));
     qp.show();
   });
@@ -162,10 +221,16 @@ async function cmdTag(index: SessionIndex, targets: SessionInfo[]): Promise<void
     added.push(createName);
   }
   for (const i of existing) {
-    const on = accepted.includes(i);
-    const name = index.getTags()[i.id!]?.name ?? '';
-    if (on && !initially.has(i.id!)) { index.setSessionsTagged(refs, i.id!, true); added.push(name); }
-    else if (!on && initially.has(i.id!)) { index.setSessionsTagged(refs, i.id!, false); removed.push(name); }
+    const id = i.id!;
+    const name = tagName(index, id);
+    if (name === undefined) continue;
+    if (checked.has(id) && !initially.has(id)) {
+      index.setSessionsTagged(refs, id, true);
+      added.push(name);
+    } else if (!checked.has(id) && (initially.has(id) || (partial.has(id) && touched.has(id)))) {
+      index.setSessionsTagged(refs, id, false);
+      removed.push(name);
+    }
   }
   refreshSidebar();
   const parts = [
@@ -178,24 +243,34 @@ async function cmdTag(index: SessionIndex, targets: SessionInfo[]): Promise<void
 // ── Save Open Tabs as Tag… ──────────────────────────────────────────────────
 
 /** The open tabs in the order the API knows (creation, or the restored order
- *  after a reload): session tabs and separators. */
-async function openTabsLayout(index: SessionIndex): Promise<TagLayoutItem[]> {
+ *  after a reload): session tabs and our separators, with the separator tabs
+ *  themselves so the tag can own them. */
+async function openTabsLayout(index: SessionIndex): Promise<{ layout: TagLayoutItem[]; separators: vscode.Terminal[] }> {
   const prefix = getConfig().sessionPrefix;
   const out: TagLayoutItem[] = [];
+  const tabs = new Map<string, vscode.Terminal>();
   for (const t of vscode.window.terminals) {
     if ((t.creationOptions as vscode.TerminalOptions | undefined)?.hideFromUser || t.exitStatus) continue;
     const sep = separatorLabel(t.name);
-    if (sep !== undefined) { out.push({ separator: sep }); continue; }
+    // eslint-disable-next-line no-await-in-loop
+    if (sep !== undefined && await isSeparator(t)) {
+      const id = newSeparatorId();
+      tabs.set(id, t);
+      out.push({ separator: sep, id });
+      continue;
+    }
     // eslint-disable-next-line no-await-in-loop
     const name = sessionNameForTerminal(t) ?? await resolveTmuxNameForTerminalLive(t, index, prefix);
     const parsed = name ? parseSessionName(name, prefix) : undefined;
     if (name && parsed && index.getSessionMeta(parsed.hash, name)) out.push({ session: name });
   }
-  return trimLayout(out);
+  const layout = trimLayout(out);
+  const kept = layout.flatMap(i => ('separator' in i && tabs.has(i.id) ? [tabs.get(i.id)!] : []));
+  return { layout, separators: kept };
 }
 
 async function cmdSaveOpenAsTag(index: SessionIndex): Promise<void> {
-  const layout = await openTabsLayout(index);
+  const { layout, separators } = await openTabsLayout(index);
   const names = layout.flatMap(i => ('session' in i ? [i.session] : []));
   if (names.length === 0) {
     vscode.window.showInformationMessage('No session tabs are open.');
@@ -204,7 +279,7 @@ async function cmdSaveOpenAsTag(index: SessionIndex): Promise<void> {
   const seps = layout.length - names.length;
   const raw = await vscode.window.showInputBox({
     title: 'Save Open Tabs as Tag',
-    prompt: `${plural(names.length, 'session tab')}${seps ? ` and ${plural(seps, 'separator')}` : ''}, in this order. Start All on the tag opens them again.`,
+    prompt: `${plural(names.length, 'session tab')}${seps ? ` and ${plural(seps, 'separator')}` : ''}, in the order they were opened (drag rows in the tag to change it). Start All opens them again.`,
     placeHolder: 'e.g. research',
     validateInput: validateName(index),
   });
@@ -215,114 +290,141 @@ async function cmdSaveOpenAsTag(index: SessionIndex): Promise<void> {
     const parsed = parseSessionName(n, prefix);
     return parsed ? [{ hash: parsed.hash, name: n }] : [];
   });
+  index.pruneUnusedTags();
   const existingId = Object.entries(index.getTags()).find(([, t]) => t.name.toLowerCase() === name.toLowerCase())?.[0];
+  let id: string;
   if (existingId) {
+    id = existingId;
     const all = await allSessions(index);
-    const current = membersOf(index, existingId, all);
+    const current = membersOf(index, id, all);
     const choice = await vscode.window.showWarningMessage(
-      `#${index.getTags()[existingId].name} already has ${plural(current.length, 'session')}. Replace them with the open tabs, or add the open tabs to it?`,
+      `#${tagName(index, id) ?? name} already has ${plural(current.length, 'session')}. Replace them with the open tabs, or add the open tabs to it?`,
       { modal: true }, 'Replace', 'Add',
     );
     if (!choice) return;
+    if (tagName(index, id) === undefined) { gone(); return; }
+    // Its order before the new members join, or they would already sit at
+    // the end without their separators.
+    const before = fullLayout(index, id, all);
     // Tag the new ones first: untagging the last member deletes a tag.
-    index.setSessionsTagged(refs, existingId, true);
+    index.setSessionsTagged(refs, id, true);
     if (choice === 'Replace') {
       const keep = new Set(names);
-      index.setSessionsTagged(current.filter(s => !keep.has(s.name)).map(s => ({ hash: s.workspaceHash, name: s.name })), existingId, false);
-      index.setTagLayout(existingId, layout);
+      index.setSessionsTagged(current.filter(s => !keep.has(s.name)).map(s => ({ hash: s.workspaceHash, name: s.name })), id, false);
+      index.untagKilled(id);
+      index.setTagLayout(id, layout);
     } else {
-      index.setTagLayout(existingId, trimLayout([...fullLayout(index, existingId, all), ...layout]));
+      index.setTagLayout(id, trimLayout([...before, ...layout]));
     }
   } else {
-    const id = index.ensureTag(name);
+    id = index.ensureTag(name);
     index.setSessionsTagged(refs, id, true);
     index.setTagLayout(id, layout);
   }
+  own(id, separators);
   refreshSidebar();
   vscode.window.setStatusBarMessage(`Saved ${plural(names.length, 'session')} as #${name}`, 3000);
 }
 
 // ── Start All / Stop All ───────────────────────────────────────────────────
 
-function openSeparatorLabels(): Set<string> {
-  const out = new Set<string>();
+/** Open separator tabs by label, each counted once per tab. */
+function openSeparatorCounts(): Map<string, number> {
+  const out = new Map<string, number>();
   for (const t of vscode.window.terminals) {
     const sep = t.exitStatus ? undefined : separatorLabel(t.name);
-    if (sep !== undefined) out.add(sep);
+    if (sep !== undefined) out.set(sep, (out.get(sep) ?? 0) + 1);
   }
   return out;
 }
 
-function actionFor(s: SessionInfo): MemberAction {
-  const tab = findTerminalForSession(s.name);
-  const hasTab = Boolean(tab && !tab.exitStatus);
+async function actionFor(s: SessionInfo): Promise<MemberAction> {
+  const hasTab = Boolean(await findVerifiedTabForSession(s.name));
   if (s.stopped) return s.parked && hasTab ? 'inPlace' : 'newTab';
-  return hasTab ? 'none' : 'newTab';
+  if (hasTab) return 'none';
+  // Running with a client attached and no tab here: its tab is in another
+  // window. Opening a second one here would split the session between them.
+  return s.attached ? 'none' : 'newTab';
 }
 
 async function cmdStartTag(index: SessionIndex, deps: TagCommandDeps, item?: TagTreeItem): Promise<void> {
   const all = await allSessions(index);
   const id = await resolveTag(index, item, all, 'Start the sessions of which tag?');
   if (!id) return;
-  const tagName = index.getTags()[id].name;
-  const entries = tagEntries(index.getTags()[id].layout, membersOf(index, id, all))
-    .map(e => ('separator' in e ? e : { session: { name: e.session.name, action: actionFor(e.session) } }));
-  let steps = startPlan(entries, openSeparatorLabels());
+  const name = tagName(index, id);
+  if (name === undefined) { gone(); return; }
+  const members = membersOf(index, id, all, scopeOf(item));
+  const actions = new Map<string, MemberAction>();
+  // eslint-disable-next-line no-await-in-loop
+  for (const s of members) actions.set(s.name, await actionFor(s));
+  const entries = tagEntries(index.getTags()[id]?.layout, members)
+    .map(e => ('separator' in e ? e : { session: { name: e.session.name, action: actions.get(e.session.name)! } }));
+  let steps = startPlan(entries, openSeparatorCounts());
   // Separator tabs need a POSIX shell.
   if (process.platform === 'win32') steps = steps.filter(s => 'session' in s);
   const count = steps.filter(s => 'session' in s).length;
   if (count === 0) {
-    vscode.window.showInformationMessage(`Every session in #${tagName} is already open.`);
+    vscode.window.showInformationMessage(`Every session in #${name} is already open.`);
     return;
   }
   if (count > CONFIRM_ABOVE) {
     const ok = await vscode.window.showWarningMessage(
-      `Open ${plural(count, 'session')} from #${tagName}?`, { modal: true }, 'Open',
+      `Open ${plural(count, 'session')} from #${name}?`, { modal: true }, 'Open',
     );
     if (ok !== 'Open') return;
   }
+  const failed: string[] = [];
   await vscode.window.withProgress(
-    { location: vscode.ProgressLocation.Notification, title: `#${tagName}` },
+    { location: vscode.ProgressLocation.Notification, title: `#${name}` },
     async progress => {
       let done = 0;
       for (const step of steps) {
-        if ('separator' in step) { openSeparator(step.separator); continue; }
+        if ('separator' in step) { own(id, [openSeparator(step.separator)]); continue; }
         progress.report({ message: `starting ${++done} of ${count}`, increment: 100 / count });
-        // eslint-disable-next-line no-await-in-loop
-        await deps.start(step.session);
+        try {
+          // eslint-disable-next-line no-await-in-loop
+          await deps.start(step.session);
+        } catch (e) {
+          console.error('[terminal-sessions] tag start failed:', e);
+          const s = members.find(m => m.name === step.session);
+          failed.push(s?.label || step.session);
+        }
       }
     },
   );
   refreshSidebar();
+  if (failed.length) vscode.window.showWarningMessage(`#${name}: could not start ${failed.join(', ')}.`);
 }
 
 async function cmdStopTag(index: SessionIndex, deps: TagCommandDeps, item?: TagTreeItem): Promise<void> {
   const all = await allSessions(index);
   const id = await resolveTag(index, item, all, 'Stop the sessions of which tag?');
   if (!id) return;
-  const tagName = index.getTags()[id].name;
-  const live = membersOf(index, id, all).filter(s => !s.stopped);
+  const name = tagName(index, id);
+  if (name === undefined) { gone(); return; }
+  const hash = scopeOf(item);
+  const live = membersOf(index, id, all, hash).filter(s => !s.stopped);
   if (live.length === 0) {
-    vscode.window.showInformationMessage(`Every session in #${tagName} is already stopped.`);
+    vscode.window.showInformationMessage(`Every session in #${name} is already stopped.`);
     return;
   }
   if (live.length > CONFIRM_ABOVE) {
     const ok = await vscode.window.showWarningMessage(
-      `Stop ${plural(live.length, 'session')} in #${tagName}?`, { modal: true }, 'Stop',
+      `Stop ${plural(live.length, 'session')} in #${name}?`, { modal: true }, 'Stop',
     );
     if (ok !== 'Stop') return;
   }
   // eslint-disable-next-line no-await-in-loop
   for (const s of live) await deps.stop(s);
-  // With the whole tag stopped, its separator tabs go too: Start All opens
-  // them again with the sessions.
-  const after = membersOf(index, id, await allSessions(index));
-  if (after.every(s => s.stopped)) {
-    const labels = new Set(fullLayout(index, id, after).flatMap(i => ('separator' in i ? [i.separator] : [])));
-    for (const t of vscode.window.terminals) {
-      const sep = separatorLabel(t.name);
-      if (sep !== undefined && labels.has(sep)) t.dispose();
+  // Once no member has a tab here (a kept, parked tab counts), the separators
+  // this window opened for the tag go too: Start All opens them again.
+  const after = membersOf(index, id, await allSessions(index), hash);
+  const tabs = await Promise.all(after.map(s => findVerifiedTabForSession(s.name)));
+  if (tabs.every(t => !t)) {
+    for (const t of ownedSeparators.get(id) ?? []) {
+      if (vscode.window.terminals.includes(t)) t.dispose();
     }
+    ownedSeparators.delete(id);
   }
   refreshSidebar();
 }
@@ -334,10 +436,11 @@ async function cmdRenameTag(index: SessionIndex, item?: TagTreeItem): Promise<vo
   if (!id) return;
   const raw = await vscode.window.showInputBox({
     title: 'Rename Tag',
-    value: index.getTags()[id].name,
+    value: tagName(index, id) ?? '',
     validateInput: validateName(index, id),
   });
   if (raw === undefined) return;
+  if (tagName(index, id) === undefined) { gone(); return; }
   index.renameTag(id, cleanTagName(raw));
   refreshSidebar();
 }
@@ -346,14 +449,14 @@ async function cmdDeleteTag(index: SessionIndex, item?: TagTreeItem): Promise<vo
   const all = await allSessions(index);
   const id = await resolveTag(index, item, all, 'Delete which tag?');
   if (!id) return;
-  const t = index.getTags()[id];
   const n = membersOf(index, id, all).length;
   const ok = await vscode.window.showWarningMessage(
-    `Delete #${t.name}? Its ${plural(n, 'session')} stay as they are; only the tag goes.`,
+    `Delete #${tagName(index, id) ?? ''}? Its ${plural(n, 'session')} stay as they are; only the tag goes.`,
     { modal: true }, 'Delete',
   );
   if (ok !== 'Delete') return;
   index.deleteTag(id);
+  ownedSeparators.delete(id);
   refreshSidebar();
 }
 
@@ -362,21 +465,22 @@ async function cmdAddTagSeparator(index: SessionIndex, item?: TagTreeItem): Prom
   const id = await resolveTag(index, item, all, 'Add a separator to which tag?');
   if (!id) return;
   const label = await vscode.window.showInputBox({
-    title: `Add Separator to #${index.getTags()[id].name}`,
+    title: `Add Separator to #${tagName(index, id) ?? ''}`,
     prompt: 'Name shown on the separator tab. Empty for a plain line. It lands at the end: drag it into place.',
     placeHolder: 'e.g. Research',
   });
   if (label === undefined) return;
-  index.setTagLayout(id, [...fullLayout(index, id, all), { separator: label.trim() }]);
+  if (tagName(index, id) === undefined) { gone(); return; }
+  index.setTagLayout(id, [...fullLayout(index, id, await allSessions(index)), { separator: label.trim(), id: newSeparatorId() }]);
   refreshSidebar();
 }
 
 async function cmdRemoveTagSeparator(index: SessionIndex, item?: TagSeparatorItem): Promise<void> {
   if (!item) return;
   const layout = fullLayout(index, item.tagId, await allSessions(index));
-  const it = layout[item.position];
-  if (!it || !('separator' in it)) return;
-  layout.splice(item.position, 1);
+  const at = layout.findIndex(it => 'separator' in it && it.id === item.sepId);
+  if (at < 0) return;
+  layout.splice(at, 1);
   index.setTagLayout(item.tagId, layout);
   refreshSidebar();
 }

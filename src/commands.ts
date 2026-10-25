@@ -1583,13 +1583,20 @@ function withTabSelection<T>(
       (t): t is vscode.Terminal => typeof (t as vscode.Terminal | undefined)?.sendText === 'function',
     );
     if (tabs.length < 2) return run(item, selection as vscode.TreeItem[] | undefined);
+    // The clicked tab first: a toggle over the batch follows the one clicked.
+    const clicked = tabs.find(t => t === item);
+    const ordered = clicked ? [clicked, ...tabs.filter(t => t !== clicked)] : tabs;
     const rows: SessionTreeItem[] = [];
-    for (const t of tabs) {
+    for (const t of ordered) {
       // eslint-disable-next-line no-await-in-loop
       const info = await resolveSessionInfoFromInvocation(t, index);
       if (info) rows.push(new SessionTreeItem(info, undefined, 'off', 0));
     }
-    return rows.length >= 2 ? run(rows[0], rows) : run(rows[0] ?? item, undefined);
+    // Fewer than two sessions: the clicked tab alone, as a plain right-click
+    // (a shell clicked next to one session tab must not act on that session).
+    const result = rows.length >= 2 ? await run(rows[0], rows) : await run(item, undefined);
+    void syncActiveTerminalContext(index);
+    return result;
   };
 }
 
