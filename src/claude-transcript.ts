@@ -105,6 +105,8 @@ type TailState = TranscriptTailState;
 interface BgAgentCache {
   mtimeMs: number;
   size: number;
+  /** Bytes read so far: up to the last complete line. */
+  offset: number;
   agentType?: string;
   description?: string;
   model?: string;
@@ -904,9 +906,88 @@ export function reduceClaudeTranscriptLine(state: TailState, line: string): bool
     return true;
 }
 
+/** A Workflow run dir untouched this long is a run the CLI never finished
+ *  (killed mid-run): its agents are not work any more, so it is not read. */
+const WORKFLOW_RUN_STALE_MS = 24 * 60 * 60 * 1000;
+
+/** Where a session's background agents write: `subagents/` itself, plus one
+ *  `subagents/workflows/<runId>/` dir per Workflow run still going. A run
+ *  that finished has its record at `workflows/<runId>.json` next to
+ *  `subagents/`, and its agents are history, so its dir is skipped. */
+function backgroundAgentDirs(sessionDir: string, nowMs: number): { dir: string; workflow: boolean }[] {
+  const dirs = [{ dir: `${sessionDir}/subagents`, workflow: false }];
+  const runsDir = `${sessionDir}/subagents/workflows`;
+  let runs: string[];
+  try { runs = fs.readdirSync(runsDir); } catch { return dirs; }
+  for (const run of runs) {
+    if (!/^wf_[0-9A-Za-z_-]+$/.test(run)) continue;
+    if (fs.existsSync(`${sessionDir}/workflows/${run}.json`)) continue;
+    try {
+      if (nowMs - fs.statSync(`${runsDir}/${run}`).mtimeMs > WORKFLOW_RUN_STALE_MS) continue;
+    } catch { continue; }
+    dirs.push({ dir: `${runsDir}/${run}`, workflow: true });
+  }
+  return dirs;
+}
+
+/** The complete lines `file` gained past byte `from`: the text up to its last
+ *  newline and the offset just after it. A line still being written stays for
+ *  the next read. */
+function readAgentDelta(file: string, from: number, size: number): { text: string; end: number } | undefined {
+  try {
+    const fd = fs.openSync(file, 'r');
+    try {
+      const buf = Buffer.alloc(size - from);
+      fs.readSync(fd, buf, 0, buf.length, from);
+      const nl = buf.lastIndexOf(0x0a);
+      if (nl < 0) return { text: '', end: from };
+      return { text: buf.subarray(0, nl).toString('utf8'), end: from + nl + 1 };
+    } finally { fs.closeSync(fd); }
+  } catch { return undefined; }
+}
+
+/** Folds agent-transcript lines into `acc`: the model, the last text, and the
+ *  last tool_use while it has no tool_result. */
+function foldAgentLines(text: string, acc: BgAgentCache): void {
+  for (const line of text.split('\n')) {
+    if (!line) continue;
+    let e: Record<string, unknown>;
+    try { e = JSON.parse(line); } catch { continue; }
+    const msg = (e.message as { role?: string; content?: unknown; model?: string }) || {};
+    if (typeof msg.model === 'string' && msg.model) acc.model = msg.model;
+    const content = msg.content;
+    if (!Array.isArray(content)) continue;
+    for (const block of content) {
+      if (!block || typeof block !== 'object') continue;
+      const b = block as Record<string, unknown>;
+      if (b.type === 'text' && typeof b.text === 'string') {
+        const t = (b.text as string).trim();
+        if (t) acc.lastText = t;
+      } else if (b.type === 'tool_use') {
+        const name = typeof b.name === 'string' ? (b.name as string) : '';
+        const id = typeof b.id === 'string' ? (b.id as string) : undefined;
+        const input = (b.input as Record<string, unknown>) || {};
+        let preview = '';
+        for (const k of ['command', 'file_path', 'pattern', 'description', 'query', 'url']) {
+          const v = input[k];
+          if (typeof v === 'string' && v) { preview = compactPreview(v); break; }
+        }
+        acc.lastToolName = name;
+        acc.lastToolInput = preview;
+        acc.pendingToolId = id;
+      } else if (b.type === 'tool_result') {
+        if (acc.pendingToolId && b.tool_use_id === acc.pendingToolId) {
+          acc.pendingToolId = undefined; // resolved
+        }
+      }
+    }
+  }
+}
+
 /**
  * Scan `<sessionFile>/subagents/` for background-agent transcripts written by
- * Claude Code ≥ 2.1.119. Each agent is a file pair:
+ * Claude Code ≥ 2.1.119, and the agents of each Workflow run still going
+ * (`subagents/workflows/<runId>/`). Each agent is a file pair:
  *     agent-<id>.jsonl       — normal user/assistant entries, with `agentId`
  *     agent-<id>.meta.json   — { agentType, description }
  *
@@ -918,10 +999,7 @@ export function reduceClaudeTranscriptLine(state: TailState, line: string): bool
  * Returns true if any subagent entry was added or updated.
  */
 export function scanBackgroundAgents(state: TailState): boolean {
-  const dir = `${state.snapshot.path}`.replace(/\.jsonl$/, '') + '/subagents';
-  let entries: string[];
-  try { entries = fs.readdirSync(dir); } catch { return false; }
-
+  const sessionDir = `${state.snapshot.path}`.replace(/\.jsonl$/, '');
   let changed = false;
   const nowMs = Date.now();
   const DONE_AFTER_MS = 30_000; // no writes for 30s → agent is done
@@ -932,188 +1010,128 @@ export function scanBackgroundAgents(state: TailState): boolean {
   const seen = new Set<string>();
   const statCache = bgStatCacheOf(state);
 
-  for (const entry of entries) {
-    // `agent-a<16 hex>.jsonl` for Task subagents, `agent-a<name>-<16 hex>.jsonl`
-    // for named teammates — so the id class has to allow hyphens/underscores.
-    // Deliberately loose rather than pinned to `a…<16 hex>`: an unknown file in
-    // here renders as an agent with no data (harmless), whereas a tightened
-    // pattern that stops matching a future id shape makes real agents vanish
-    // from the sidebar with no symptom. That second failure is the one this
-    // regex was just fixed for.
-    const m = /^agent-([0-9A-Za-z][0-9A-Za-z_-]*)\.jsonl$/.exec(entry);
-    if (!m) continue;
-    const agentId = m[1];
-    seen.add(agentId);
-    const jsonlPath = `${dir}/${entry}`;
-    const metaPath = `${dir}/agent-${agentId}.meta.json`;
+  for (const { dir, workflow } of backgroundAgentDirs(sessionDir, nowMs)) {
+    let entries: string[];
+    try { entries = fs.readdirSync(dir); } catch { continue; }
+    for (const entry of entries) {
+      // `agent-a<16 hex>.jsonl` for Task subagents, `agent-a<name>-<16 hex>.jsonl`
+      // for named teammates — so the id class has to allow hyphens/underscores.
+      // Deliberately loose rather than pinned to `a…<16 hex>`: an unknown file in
+      // here renders as an agent with no data (harmless), whereas a tightened
+      // pattern that stops matching a future id shape makes real agents vanish
+      // from the sidebar with no symptom. That second failure is the one this
+      // regex was just fixed for.
+      const m = /^agent-([0-9A-Za-z][0-9A-Za-z_-]*)\.jsonl$/.exec(entry);
+      if (!m) continue;
+      const agentId = m[1];
+      seen.add(agentId);
+      const jsonlPath = `${dir}/${entry}`;
+      const metaPath = `${dir}/agent-${agentId}.meta.json`;
 
-    let stat: fs.Stats;
-    try { stat = fs.statSync(jsonlPath); } catch { continue; }
+      let stat: fs.Stats;
+      try { stat = fs.statSync(jsonlPath); } catch { continue; }
 
-    let agentType: string | undefined;
-    let description: string | undefined;
-    let model: string | undefined;
-    let teammate = false;
-    let metaSeen = false;
-    let lastText = '';
-    let lastToolName: string | undefined;
-    let lastToolInput: string | undefined;
-    let pendingToolId: string | undefined;
+      // Reads agent-<id>.meta.json into `c`. Returns whether it parsed, so a
+      // sidecar that does not exist yet can be retried later.
+      const readMeta = (c: BgAgentCache): boolean => {
+        try {
+          const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+          if (typeof meta.agentType === 'string') c.agentType = meta.agentType;
+          if (typeof meta.description === 'string') c.description = meta.description;
+          if (typeof meta.model === 'string' && meta.model) c.model = meta.model;
+          c.teammate = meta.taskKind === 'in_process_teammate';
+          return true;
+        } catch { return false; }
+      };
 
-    // Reads agent-<id>.meta.json into the locals above. Returns whether it
-    // parsed, so a sidecar that does not exist yet can be retried later.
-    const readMeta = (): boolean => {
-      try {
-        const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
-        agentType = typeof meta.agentType === 'string' ? meta.agentType : agentType;
-        description = typeof meta.description === 'string' ? meta.description : description;
-        if (typeof meta.model === 'string' && meta.model) model = meta.model;
-        teammate = meta.taskKind === 'in_process_teammate';
-        return true;
-      } catch { return false; }
-    };
-
-    const cached = statCache.get(agentId);
-    if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
-      // Unchanged since the last poll — reuse the parsed fields and only
-      // re-evaluate the mtime/pending-tool state below. Avoids re-reading and
-      // re-JSON.parsing every background-agent jsonl on each 3s tick.
-      agentType = cached.agentType;
-      description = cached.description;
-      model = cached.model;
-      teammate = cached.teammate === true;
-      lastText = cached.lastText;
-      lastToolName = cached.lastToolName;
-      lastToolInput = cached.lastToolInput;
-      pendingToolId = cached.pendingToolId;
-      metaSeen = cached.metaSeen === true;
-      // The cache key is the JSONL's mtime+size, but the meta sidecar is a
-      // separate file that can be written after it. Without this retry an
-      // agent whose meta landed late (or whose jsonl went quiet immediately)
-      // would keep the fallback `teammate = false` forever, and teammate is
-      // what decides idle vs done.
-      if (!metaSeen && readMeta()) {
-        metaSeen = true;
-        statCache.set(agentId, { ...cached, agentType, description, model, teammate, metaSeen: true });
+      let cached = statCache.get(agentId);
+      const fileChanged = !cached || cached.mtimeMs !== stat.mtimeMs || cached.size !== stat.size;
+      if (!cached || stat.size < cached.offset) {
+        // New, or rewritten from scratch: read it from the top.
+        cached = { mtimeMs: 0, size: 0, offset: 0, lastText: '' };
+        // A workflow agent quiet for longer than any tool budget is done
+        // whatever its file says, and a run can hold hundreds of them: skip
+        // reading what would only feed a hidden row.
+        if (workflow && nowMs - stat.mtimeMs > TOOL_DONE_AFTER_MS) cached.offset = stat.size;
       }
-    } else {
-      // Read meta once per change (cheap, tiny files). A miss is remembered so
-      // the cache-hit path above can retry a sidecar that has not landed yet.
-      metaSeen = readMeta();
+      // Meta again on every change: it can land after the transcript, and
+      // `teammate` is what decides idle vs done.
+      if (fileChanged || !cached.metaSeen) cached.metaSeen = readMeta(cached) || cached.metaSeen;
+      if (stat.size > cached.offset) {
+        // Only the lines added since the last poll: a busy agent's file grows
+        // to megabytes, and reading it whole every 3s for each of a
+        // workflow's agents adds up.
+        const delta = readAgentDelta(jsonlPath, cached.offset, stat.size);
+        if (!delta) continue;
+        foldAgentLines(delta.text, cached);
+        cached.offset = delta.end;
+      }
+      cached.mtimeMs = stat.mtimeMs;
+      cached.size = stat.size;
+      statCache.set(agentId, cached);
+      const { agentType, description, model, lastText, lastToolName, lastToolInput, pendingToolId } = cached;
+      const teammate = cached.teammate === true;
 
-      // Walk the whole agent file to find the last text and outstanding tool.
-      // Background-agent jsonls are typically 50-200KB and read fast.
-      try {
-        const lines = fs.readFileSync(jsonlPath, 'utf8').split('\n');
-        for (const line of lines) {
-          if (!line) continue;
-          let e: Record<string, unknown>;
-          try { e = JSON.parse(line); } catch { continue; }
-          const msg = (e.message as { role?: string; content?: unknown; model?: string }) || {};
-          if (typeof msg.model === 'string' && msg.model) model = msg.model;
-          const content = msg.content;
-          if (Array.isArray(content)) {
-            for (const block of content) {
-              if (!block || typeof block !== 'object') continue;
-              const b = block as Record<string, unknown>;
-              if (b.type === 'text' && typeof b.text === 'string') {
-                const t = (b.text as string).trim();
-                if (t) lastText = t;
-              } else if (b.type === 'tool_use') {
-                const name = typeof b.name === 'string' ? (b.name as string) : '';
-                const id = typeof b.id === 'string' ? (b.id as string) : undefined;
-                const input = (b.input as Record<string, unknown>) || {};
-                let preview = '';
-                for (const k of ['command', 'file_path', 'pattern', 'description', 'query', 'url']) {
-                  const v = input[k];
-                  if (typeof v === 'string' && v) { preview = compactPreview(v); break; }
-                }
-                lastToolName = name;
-                lastToolInput = preview;
-                pendingToolId = id;
-              } else if (b.type === 'tool_result') {
-                if (pendingToolId && b.tool_use_id === pendingToolId) {
-                  pendingToolId = undefined; // resolved
-                }
-              }
-            }
-          }
-        }
-      } catch { continue; }
+      const ageMs = nowMs - stat.mtimeMs;
+      // An unresolved tool_use keeps the agent "running" well past the idle
+      // threshold; only a completed last block (text / tool_result) expires at 30s.
+      const isDone = pendingToolId ? ageMs > TOOL_DONE_AFTER_MS : ageMs > DONE_AFTER_MS;
+      // A quiet Task subagent has exited; a quiet teammate is merely between
+      // turns and can be messaged again, so it goes idle instead of done.
+      const newState: SubagentState = isDone
+        ? (teammate ? 'idle' : 'done')
+        : pendingToolId
+          ? 'tool'
+          : 'working';
 
-      statCache.set(agentId, {
-        mtimeMs: stat.mtimeMs,
-        size: stat.size,
+      const existing = state.subagentMap.get(agentId);
+      const snap: SubagentSnapshot = {
+        id: agentId,
+        parentId: undefined,
+        depth: 0,
         agentType,
-        description,
+        description: description ? compactPreview(description) : undefined,
         model,
-        teammate,
-        metaSeen,
-        lastText,
-        lastToolName,
-        lastToolInput,
-        pendingToolId,
-      });
-    }
+        teammate: teammate || undefined,
+        viaDir: true,
+        lastActivityAt: new Date(stat.mtimeMs),
+        // Only an UNRESOLVED tool_use is a current tool. lastToolName survives its
+        // own tool_result (it is what the 'tool' state renders), so keying off it
+        // directly left a finished agent — idle teammates especially — showing a
+        // tool it stopped running long ago.
+        currentTool: pendingToolId ? lastToolName : undefined,
+        currentToolInput: pendingToolId ? lastToolInput : undefined,
+        lastMessage: lastText ? compactPreview(lastText) : undefined,
+        state: newState,
+        startedAt: existing?.startedAt || new Date(stat.birthtimeMs || stat.mtimeMs),
+        completedAt: newState === 'done'
+          ? (existing?.completedAt || new Date(stat.mtimeMs))
+          : undefined,
+        firstOffset: undefined,
+      };
 
-    const ageMs = nowMs - stat.mtimeMs;
-    // An unresolved tool_use keeps the agent "running" well past the idle
-    // threshold; only a completed last block (text / tool_result) expires at 30s.
-    const isDone = pendingToolId ? ageMs > TOOL_DONE_AFTER_MS : ageMs > DONE_AFTER_MS;
-    // A quiet Task subagent has exited; a quiet teammate is merely between
-    // turns and can be messaged again, so it goes idle instead of done.
-    const newState: SubagentState = isDone
-      ? (teammate ? 'idle' : 'done')
-      : pendingToolId
-        ? 'tool'
-        : 'working';
-
-    const existing = state.subagentMap.get(agentId);
-    const snap: SubagentSnapshot = {
-      id: agentId,
-      parentId: undefined,
-      depth: 0,
-      agentType,
-      description: description ? compactPreview(description) : undefined,
-      model,
-      teammate: teammate || undefined,
-      viaDir: true,
-      lastActivityAt: new Date(stat.mtimeMs),
-      // Only an UNRESOLVED tool_use is a current tool. lastToolName survives its
-      // own tool_result (it is what the 'tool' state renders), so keying off it
-      // directly left a finished agent — idle teammates especially — showing a
-      // tool it stopped running long ago.
-      currentTool: pendingToolId ? lastToolName : undefined,
-      currentToolInput: pendingToolId ? lastToolInput : undefined,
-      lastMessage: lastText ? compactPreview(lastText) : undefined,
-      state: newState,
-      startedAt: existing?.startedAt || new Date(stat.birthtimeMs || stat.mtimeMs),
-      completedAt: newState === 'done'
-        ? (existing?.completedAt || new Date(stat.mtimeMs))
-        : undefined,
-      firstOffset: undefined,
-    };
-
-    // Detect meaningful change to avoid unnecessary sidebar refreshes.
-    if (!existing
-        || existing.state !== snap.state
-        || existing.currentTool !== snap.currentTool
-        || existing.lastMessage !== snap.lastMessage
-        || existing.agentType !== snap.agentType
-        || existing.description !== snap.description
-        || existing.model !== snap.model
-        // A meta sidecar that landed late flips this without moving anything
-        // else, and it decides idle vs done — so it has to count as a change.
-        || existing.teammate !== snap.teammate
-        || existing.lastActivityAt?.getTime() !== snap.lastActivityAt?.getTime()) {
-      state.subagentMap.set(agentId, snap);
-      changed = true;
+      // Detect meaningful change to avoid unnecessary sidebar refreshes.
+      if (!existing
+          || existing.state !== snap.state
+          || existing.currentTool !== snap.currentTool
+          || existing.lastMessage !== snap.lastMessage
+          || existing.agentType !== snap.agentType
+          || existing.description !== snap.description
+          || existing.model !== snap.model
+          // A meta sidecar that landed late flips this without moving anything
+          // else, and it decides idle vs done — so it has to count as a change.
+          || existing.teammate !== snap.teammate
+          || existing.lastActivityAt?.getTime() !== snap.lastActivityAt?.getTime()) {
+        state.subagentMap.set(agentId, snap);
+        changed = true;
+      }
     }
   }
 
   // Drop background-agent entries whose file no longer exists (unlikely but
-  // handles manual cleanup). Task-spawned subagents (have parentId potentially
-  // and a different id shape) are left alone.
+  // handles manual cleanup) or whose workflow run has finished. Task-spawned
+  // subagents (have parentId potentially and a different id shape) are left
+  // alone.
   for (const id of Array.from(state.subagentMap.keys())) {
     const existing = state.subagentMap.get(id);
     if (!existing) continue;
