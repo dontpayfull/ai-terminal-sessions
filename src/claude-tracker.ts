@@ -845,7 +845,12 @@ export class ClaudeTracker {
             //   3. Neither → Stop hook missed; treat as idle to avoid a
             //      session that looks "working" forever.
             const stoppedAfterLastAssistant = hookAtOrAfter(snap.lastStopAt?.getTime(), ta);
-            if (!stoppedAfterLastAssistant && transcriptIsFresh) {
+            // The hooks' own word that a turn runs since that Stop: a prompt
+            // sent while the agent was busy is queued and gets no user line,
+            // and a turn of thinking and tool calls writes no assistant text,
+            // so the transcript alone still ends on the previous answer.
+            const hooksSayWorking = hooksLive && raw.state === 'working';
+            if ((!stoppedAfterLastAssistant || hooksSayWorking) && transcriptIsFresh) {
               snap.state = 'working';
               if (!snap.lastPromptAt && t.lastUserMessageAt) {
                 snap.lastPromptAt = t.lastUserMessageAt;
