@@ -9,6 +9,7 @@ import { TagTreeItem, TagSeparatorItem } from './sidebar/tag-items';
 import { findVerifiedTabForSession, resolveTmuxNameForTerminalLive, sessionNameForTerminal } from './profile-provider';
 import { currentWorkspace, parseSessionName } from './workspace-id';
 import { separatorLabel, openSeparator, isSeparator } from './separator';
+import { readTabOrder } from './tab-order';
 import {
   TagLayoutItem, MemberAction, cleanTagName, tagEntries, toLayout, trimLayout, startPlan, newSeparatorId,
 } from './tags';
@@ -242,15 +243,14 @@ async function cmdTag(index: SessionIndex, targets: SessionInfo[]): Promise<void
 
 // ── Save Open Tabs as Tag… ──────────────────────────────────────────────────
 
-/** The open tabs in the order the API knows (creation, or the restored order
- *  after a reload): session tabs and our separators, with the separator tabs
- *  themselves so the tag can own them. */
+/** The open tabs in tab-list order: session tabs and our separators, with
+ *  the separator tabs themselves so the tag can own them. */
 async function openTabsLayout(index: SessionIndex): Promise<{ layout: TagLayoutItem[]; separators: vscode.Terminal[] }> {
   const prefix = getConfig().sessionPrefix;
   const out: TagLayoutItem[] = [];
   const tabs = new Map<string, vscode.Terminal>();
-  for (const t of vscode.window.terminals) {
-    if ((t.creationOptions as vscode.TerminalOptions | undefined)?.hideFromUser || t.exitStatus) continue;
+  for (const t of await readTabOrder()) {
+    if (t.exitStatus) continue;
     const sep = separatorLabel(t.name);
     // eslint-disable-next-line no-await-in-loop
     if (sep !== undefined && await isSeparator(t)) {
@@ -279,7 +279,7 @@ async function cmdSaveOpenAsTag(index: SessionIndex): Promise<void> {
   const seps = layout.length - names.length;
   const raw = await vscode.window.showInputBox({
     title: 'Save Open Tabs as Tag',
-    prompt: `${plural(names.length, 'session tab')}${seps ? ` and ${plural(seps, 'separator')}` : ''}, in the order they were opened (drag rows in the tag to change it). Start All opens them again.`,
+    prompt: `${plural(names.length, 'session tab')}${seps ? ` and ${plural(seps, 'separator')}` : ''}, in this order. Start All opens them again.`,
     placeHolder: 'e.g. research',
     validateInput: validateName(index),
   });

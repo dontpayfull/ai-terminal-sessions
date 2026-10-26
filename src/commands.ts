@@ -29,6 +29,7 @@ import type { TerminalTracker } from './terminal-tracker';
 import { setAsDefaultProfile, restorePreviousDefaultProfile } from './default-profile';
 import { separatorLabel, openSeparator } from './separator';
 import { registerTagCommands } from './tag-commands';
+import { readTabOrder } from './tab-order';
 
 /** Delay between opening the attached terminal and sending `claude --resume`,
  *  giving the shell time to finish rc/zshrc init. Heavy zsh setups (oh-my-zsh,
@@ -1933,7 +1934,7 @@ async function cmdRestartAll(
   // or they would all drift to the front and the sections would mix.
   const slots: Array<{ target?: { name: string; tab: vscode.Terminal }; sep?: string; parked?: string; tab: vscode.Terminal }> = [];
   const queued = new Set<string>();
-  for (const term of vscode.window.terminals) {
+  for (const term of await readTabOrder()) {
     const sepLabel = separatorLabel(term.name);
     if (sepLabel !== undefined) { slots.push({ sep: sepLabel, tab: term }); continue; }
     // eslint-disable-next-line no-await-in-loop
@@ -2721,8 +2722,9 @@ async function cmdReattachAll(
   const byName = new Map<string, SessionInfo>();
   for (const s of sessions) byName.set(s.name, s);
 
-  // Scan the OPEN terminals in panel order (window.terminals is creation/restore
-  // order) instead of iterating sessions. This: (a) catches tabs the user
+  // Scan the OPEN terminals in tab-list order (read from the list itself, see
+  // tab-order.ts; window.terminals is only creation/restore order) instead of
+  // iterating sessions. This: (a) catches tabs the user
   // renamed so they no longer carry the `#<tabId>` we'd match on — we recover
   // the tmux name from the live process via PID; and (b) re-creates the tabs
   // exactly where they sat, since we dispose+create left-to-right.
@@ -2736,7 +2738,7 @@ async function cmdReattachAll(
   // the list, so a separator among them is recreated in its turn too, or the
   // sections would all collapse to the front.
   const slots: Array<{ entry?: Entry; sep?: { tab: vscode.Terminal; label: string }; liveTab?: vscode.Terminal }> = [];
-  for (const term of vscode.window.terminals) {
+  for (const term of await readTabOrder()) {
     const sepLabel = separatorLabel(term.name);
     if (sepLabel !== undefined) { slots.push({ sep: { tab: term, label: sepLabel } }); continue; }
     const exited = !!term.exitStatus;

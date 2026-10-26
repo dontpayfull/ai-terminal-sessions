@@ -318,9 +318,10 @@ and drag the new tab where the section starts.
   so every section comes back where it was; **Restart All** does the same.
   After a reboot the sessions come back stopped and the separators may
   need a drag. A separator you renamed by hand is left alone. The order is
-  the one Cursor reports, which is the tab list as it was restored when
-  the window opened: a tab dragged since then is rebuilt where it was
-  created
+  the tab list as you see it, dragged tabs included: VS Code does not
+  tell an extension, so it steps the focus through every tab once to
+  read it (a brief flicker). The other panes of a split and terminals in
+  the editor area come last
 - Separators never appear in the sidebar and never get agent state
 - macOS, Linux, WSL and Remote-SSH (it needs a POSIX shell)
 
@@ -386,12 +387,12 @@ day, open them all again tomorrow, in the same order.
   Once none of them has a tab left, it closes the separator tabs this
   window opened or saved for the tag; one restored by a reload stays
 - Both act on the sessions of the workspace the tag row sits in
-- **The order is the tag's own.** VS Code does not tell an extension
-  how you dragged the tabs, so the tag keeps its order: it starts as the
-  tabs' order (the order they were opened in, or restored in after a
-  reload) and you change it by dragging rows inside the tag. Drop any
-  session on a tag row to add it. **Add Separator to Tag…** adds a
-  section; right-click a separator row to remove it
+- **The order is the tag's own.** Save Open Tabs takes the tab list as
+  you see it, dragged tabs included (it steps the focus through every
+  tab once to read it, a brief flicker). After that the tag keeps its
+  order: change it by dragging rows inside the tag. Drop any session on
+  a tag row to add it. **Add Separator to Tag…** adds a section;
+  right-click a separator row to remove it
 - Right-click a tag to rename or delete it. Deleting leaves the sessions
   as they are
 - Type `#research` in the sidebar filter to list a tag's sessions; a

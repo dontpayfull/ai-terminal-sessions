@@ -25,6 +25,7 @@ import { registerNoteViews } from './sidebar/note-view';
 import { maybeOfferDefaultProfile, setPlatformContext } from './default-profile';
 import { queuePrompt, openPromptQueue } from './startup-prompts';
 import { maybeOfferDescriptionTemplate } from './tab-state';
+import { isWalkingTabs } from './tab-order';
 
 // Note: tmux.conf is bootstrapped lazily by tmux.ensureConf() when the first
 // session starts. No need to pre-seed from the extension bundle.
@@ -123,6 +124,8 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
     vscode.window.onDidCloseTerminal(() => refreshSidebar()),
     vscode.window.onDidOpenTerminal(() => refreshSidebar()),
     vscode.window.onDidChangeActiveTerminal(t => {
+      // Reading the tab order steps through every tab: not the user looking.
+      if (isWalkingTabs()) return;
       const gen = ++activeResolveGen;
       // Reflect the new active terminal's lock state for the native tab menu's
       // Kill ↔ locked-hint gate. Runs on every switch (incl. t === undefined,
