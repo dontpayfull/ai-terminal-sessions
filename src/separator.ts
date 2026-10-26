@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { execFile } from 'child_process';
 import { COMMAND, SEPARATOR_PROFILE_ID } from './config';
-import { isWalkingTabs } from './tab-order';
+import { isWalkingTabs, onTabWalkEnd } from './tab-order';
 
 /**
  * Separator tabs: named dividers in the native terminal tab list, dragged
@@ -164,5 +164,6 @@ export function registerSeparators(ctx: vscode.ExtensionContext): void {
       if (label !== undefined) openSeparator(label);
     }),
     vscode.window.onDidChangeActiveTerminal(t => { if (!isWalkingTabs()) void note(t); }),
+    onTabWalkEnd(() => void note(vscode.window.activeTerminal)),
   );
 }

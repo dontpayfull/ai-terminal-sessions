@@ -4,7 +4,7 @@ All notable changes to the Terminal Sessions extension.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project uses semantic versioning once past 1.0.0.
 
-## [Unreleased]
+## [0.39.0] — 2026-10-26
 
 ### Added
 
@@ -13,13 +13,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the
 
 ### Changed
 
-- **Save Open Tabs as Tag**, **Re-attach All Terminals** and **Restart All Sessions** now read the tab list in the order you see it, tabs and separators you dragged included, instead of the order the tabs were opened in. VS Code does not tell an extension about a drag, so they step the focus through every tab once (a brief flicker) and return to the tab you were on; the unread marks, the sidebar and the separators ignore that walk.
+- **Save Open Tabs as Tag**, **Re-attach All Terminals** and **Restart All Sessions** now read the tab list in the order you see it, tabs and separators you dragged included, instead of the order the tabs were opened in. VS Code does not tell an extension about a drag, so they step the focus through every tab once (a brief flicker) and return to the tab you were on; the unread marks, the sidebar and the separators ignore that walk. Two walks never run at once, and a tab opened or closed during one is accounted for. Keys typed during the walk go to whichever tab it is on, so wait for it to finish.
 - The toolbar's re-attach button is now **Re-attach All Terminals**: it reconnects every session tab, the orange ghost tabs after a restart included, so the ghost-only variant is gone from the toolbar. Its tooltip says what it does.
 
 ### Fixed
 
-- A turn started by a prompt sent while the agent was still busy no longer shows as finished (green) while it runs. Claude Code queues such a prompt without a user line in the transcript, and a turn of thinking and tool calls writes no assistant text, so the transcript alone still ended on the previous answer; the hooks reporting the turn now count.
-- A session running a Workflow now shows as working (magenta) until the run ends, instead of done (green) as soon as the lead's turn handed the run off. The agents of a workflow write under `subagents/workflows/<run>/`, which the background-agent scan did not read; it now reads every run still going and stops at the run's record. Agent transcripts are also read from where the last poll stopped, not whole on every poll.
+- A turn started by a prompt sent while the agent was still busy no longer shows as finished (green) while it runs. Claude Code queues such a prompt without a user line in the transcript, and a turn of thinking and tool calls writes no assistant text, so the transcript alone still ended on the previous answer; the hooks reporting the turn now count. The idle nudge Claude sends from the prompt ends such a turn when its Stop was lost.
+- A session running a Workflow now shows as working (magenta) until the run ends, instead of done (green) as soon as the lead's turn handed the run off. The agents of a workflow write under `subagents/workflows/<run>/`, which the background-agent scan did not read; it now reads every run still going and stops at the run's record. While a run has no record and wrote within the last 10 minutes, its latest agent stays at work, so a long model call or a pause between phases does not end it early. Agent transcripts are also read from where the last poll stopped, not whole on every poll.
 
 ## [0.38.0] — 2026-10-25
 

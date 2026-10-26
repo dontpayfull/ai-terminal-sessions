@@ -25,7 +25,7 @@ import { registerNoteViews } from './sidebar/note-view';
 import { maybeOfferDefaultProfile, setPlatformContext } from './default-profile';
 import { queuePrompt, openPromptQueue } from './startup-prompts';
 import { maybeOfferDescriptionTemplate } from './tab-state';
-import { isWalkingTabs } from './tab-order';
+import { isWalkingTabs, onTabWalkEnd } from './tab-order';
 
 // Note: tmux.conf is bootstrapped lazily by tmux.ensureConf() when the first
 // session starts. No need to pre-seed from the extension bundle.
@@ -120,42 +120,46 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   // PID walk for a tab you already left must not clobber the newer result
   // (the tracker's "which tab is the user looking at" depends on it).
   let activeResolveGen = 0;
+  const onActiveTerminal = (t: vscode.Terminal | undefined): void => {
+    // Reading the tab order steps through every tab: not the user looking.
+    if (isWalkingTabs()) return;
+    const gen = ++activeResolveGen;
+    // Reflect the new active terminal's lock state for the native tab menu's
+    // Kill ↔ locked-hint gate. Runs on every switch (incl. t === undefined,
+    // which sets the key false); does its own resolve, independent of the MRU
+    // logic below.
+    void syncActiveTerminalContext(index);
+    if (!t) { claudeTracker.setActiveTmuxSession(undefined); noteController.setFollowed(undefined); return; }
+    void (async () => {
+      // Robust to reload-restored (⚠) tabs (trimmed shellArgs) AND renamed
+      // tabs (no #tabId in the label) — falls back to the live process via PID.
+      const name = await resolveTmuxNameForTerminalLive(t, index, getConfig().sessionPrefix);
+      if (gen !== activeResolveGen) return; // superseded by a newer tab switch
+      if (!name) { claudeTracker.setActiveTmuxSession(undefined); noteController.setFollowed(undefined); return; }
+      // Focusing the tab "reads" its unread result.
+      claudeTracker.setActiveTmuxSession(name);
+      noteController.setFollowed(name);
+      const parsed = parseSessionName(name, getConfig().sessionPrefix);
+      if (!parsed) return;
+      index.setSessionLastActive(parsed.hash, name);
+      if (getConfig().sidebarSortMode === 'mru') refreshSidebar();
+      // Highlight the matching session in our sidebar so it's easy to locate
+      // when you have many terminal tabs open — but ONLY if it's already
+      // visible. Never expand a collapsed group/master or scroll to a hidden
+      // row on a plain tab switch; that jump is reserved for the explicit
+      // right-click "Reveal in Terminal Sessions View" command (expand=true).
+      // Opt-out via terminalSessions.revealActiveSession (some users find the
+      // selection jumping around on every tab switch distracting — see #1).
+      if (getConfig().revealActiveSession) void revealSessionInSidebar(name, false, false);
+    })();
+  };
   ctx.subscriptions.push(
     vscode.window.onDidCloseTerminal(() => refreshSidebar()),
     vscode.window.onDidOpenTerminal(() => refreshSidebar()),
-    vscode.window.onDidChangeActiveTerminal(t => {
-      // Reading the tab order steps through every tab: not the user looking.
-      if (isWalkingTabs()) return;
-      const gen = ++activeResolveGen;
-      // Reflect the new active terminal's lock state for the native tab menu's
-      // Kill ↔ locked-hint gate. Runs on every switch (incl. t === undefined,
-      // which sets the key false); does its own resolve, independent of the MRU
-      // logic below.
-      void syncActiveTerminalContext(index);
-      if (!t) { claudeTracker.setActiveTmuxSession(undefined); noteController.setFollowed(undefined); return; }
-      void (async () => {
-        // Robust to reload-restored (⚠) tabs (trimmed shellArgs) AND renamed
-        // tabs (no #tabId in the label) — falls back to the live process via PID.
-        const name = await resolveTmuxNameForTerminalLive(t, index, getConfig().sessionPrefix);
-        if (gen !== activeResolveGen) return; // superseded by a newer tab switch
-        if (!name) { claudeTracker.setActiveTmuxSession(undefined); noteController.setFollowed(undefined); return; }
-        // Focusing the tab "reads" its unread result.
-        claudeTracker.setActiveTmuxSession(name);
-        noteController.setFollowed(name);
-        const parsed = parseSessionName(name, getConfig().sessionPrefix);
-        if (!parsed) return;
-        index.setSessionLastActive(parsed.hash, name);
-        if (getConfig().sidebarSortMode === 'mru') refreshSidebar();
-        // Highlight the matching session in our sidebar so it's easy to locate
-        // when you have many terminal tabs open — but ONLY if it's already
-        // visible. Never expand a collapsed group/master or scroll to a hidden
-        // row on a plain tab switch; that jump is reserved for the explicit
-        // right-click "Reveal in Terminal Sessions View" command (expand=true).
-        // Opt-out via terminalSessions.revealActiveSession (some users find the
-        // selection jumping around on every tab switch distracting — see #1).
-        if (getConfig().revealActiveSession) void revealSessionInSidebar(name, false, false);
-      })();
-    }),
+    vscode.window.onDidChangeActiveTerminal(onActiveTerminal),
+    // A walk that could not return to its starting tab (closed meanwhile):
+    // catch up with the tab it left active.
+    onTabWalkEnd(() => onActiveTerminal(vscode.window.activeTerminal)),
     // Coming back to the window while a finished session's tab is active counts
     // as looking at it.
     vscode.window.onDidChangeWindowState(s => { if (s.focused) claudeTracker.onWindowFocused(); }),

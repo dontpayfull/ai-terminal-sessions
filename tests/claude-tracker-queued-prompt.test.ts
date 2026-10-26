@@ -92,3 +92,48 @@ test('a queued prompt running tools after the last Stop shows working', async ()
     tracker.dispose();
   }
 });
+
+test('an idle nudge ends a queued turn whose Stop was lost', async () => {
+  fs.rmSync(ROOT, { recursive: true, force: true });
+  const session = '00000000-0000-4000-8000-0000000000a2';
+  const tmux = 'ts-9c396db3-902';
+  const transcript = path.join(os.homedir(), 'queued-lost-stop.jsonl');
+  const now = Date.now();
+  const iso = (ms: number): string => new Date(now - ms).toISOString();
+  const sec = (ms: number): number => Math.floor((now - ms) / 1000);
+  fs.writeFileSync(transcript, [
+    { type: 'user', message: { role: 'user', content: 'Check the pool' }, uuid: 'u-1', timestamp: iso(400_000) },
+    {
+      type: 'assistant', uuid: 'a-1', timestamp: iso(380_000),
+      message: { id: 'msg-1', role: 'assistant', model: 'claude-sonnet-4-6', content: [{ type: 'text', text: 'Pool is fine.' }] },
+    },
+    { type: 'queue-operation', operation: 'enqueue', timestamp: iso(300_000), sessionId: session, content: 'Now resize it' },
+    {
+      type: 'assistant', uuid: 'a-2', timestamp: iso(290_000),
+      message: { id: 'msg-2', role: 'assistant', model: 'claude-sonnet-4-6', content: [{ type: 'tool_use', id: 't-1', name: 'Edit', input: {} }] },
+    },
+  ].map(r => JSON.stringify(r)).join('\n') + '\n');
+  fs.mkdirSync(ROOT, { recursive: true });
+  const hook = (event: string, ms: number, extra: Record<string, unknown> = {}): string => JSON.stringify({
+    agent: 'claude', event, ts: sec(ms), sessionId: session, tmuxSession: tmux, cwd: '/tmp', transcriptPath: transcript, ...extra,
+  });
+  fs.writeFileSync(LOG, [
+    hook('UserPromptSubmit', 400_000),
+    hook('Stop', 380_000),
+    hook('UserPromptSubmit', 300_000),
+    hook('PreToolUse', 290_000, { toolName: 'Edit' }),
+    hook('PostToolUse', 280_000, { toolName: 'Edit' }),
+    // No Stop: lost. A minute later Claude nudges from the prompt.
+    hook('Notification', 200_000, { message: 'Claude is waiting for your input' }),
+  ].join('\n') + '\n');
+
+  const ctx = { extensionPath: fs.mkdtempSync(path.join(os.homedir(), 'ts-ext-')) };
+  const tracker = new ClaudeTracker(ctx as never, new AgentRegistry(), fakeIndex() as never);
+  tracker.start();
+  try {
+    await until(() => tracker.getSnapshot(tmux)?.lastAssistantMessage === 'Pool is fine.');
+    assert.notEqual(tracker.getSnapshot(tmux)?.state, 'working');
+  } finally {
+    tracker.dispose();
+  }
+});

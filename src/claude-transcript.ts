@@ -107,6 +107,9 @@ interface BgAgentCache {
   size: number;
   /** Bytes read so far: up to the last complete line. */
   offset: number;
+  /** The model agent-<id>.meta.json names; `model` (from the transcript)
+   *  wins over it. */
+  metaModel?: string;
   agentType?: string;
   description?: string;
   model?: string;
@@ -906,26 +909,29 @@ export function reduceClaudeTranscriptLine(state: TailState, line: string): bool
     return true;
 }
 
-/** A Workflow run dir untouched this long is a run the CLI never finished
- *  (killed mid-run): its agents are not work any more, so it is not read. */
+/** A Workflow run with no write this long is a run the CLI never finished
+ *  (killed mid-run): its agents are not work any more. */
 const WORKFLOW_RUN_STALE_MS = 24 * 60 * 60 * 1000;
+/** Run dirs that are over: recorded as finished, or found dead that way.
+ *  Neither comes back, so they are not checked or stat'ed on later polls. */
+const closedWorkflowRuns = new Set<string>();
 
 /** Where a session's background agents write: `subagents/` itself, plus one
  *  `subagents/workflows/<runId>/` dir per Workflow run still going. A run
  *  that finished has its record at `workflows/<runId>.json` next to
- *  `subagents/`, and its agents are history, so its dir is skipped. */
-function backgroundAgentDirs(sessionDir: string, nowMs: number): { dir: string; workflow: boolean }[] {
+ *  `subagents/`, and its agents are history, so its dir is skipped, as is a
+ *  run found dead (see closedWorkflowRuns). */
+function backgroundAgentDirs(sessionDir: string): { dir: string; workflow: boolean }[] {
   const dirs = [{ dir: `${sessionDir}/subagents`, workflow: false }];
   const runsDir = `${sessionDir}/subagents/workflows`;
   let runs: string[];
   try { runs = fs.readdirSync(runsDir); } catch { return dirs; }
   for (const run of runs) {
     if (!/^wf_[0-9A-Za-z_-]+$/.test(run)) continue;
-    if (fs.existsSync(`${sessionDir}/workflows/${run}.json`)) continue;
-    try {
-      if (nowMs - fs.statSync(`${runsDir}/${run}`).mtimeMs > WORKFLOW_RUN_STALE_MS) continue;
-    } catch { continue; }
-    dirs.push({ dir: `${runsDir}/${run}`, workflow: true });
+    const dir = `${runsDir}/${run}`;
+    if (closedWorkflowRuns.has(dir)) continue;
+    if (fs.existsSync(`${sessionDir}/workflows/${run}.json`)) { closedWorkflowRuns.add(dir); continue; }
+    dirs.push({ dir, workflow: true });
   }
   return dirs;
 }
@@ -938,10 +944,10 @@ function readAgentDelta(file: string, from: number, size: number): { text: strin
     const fd = fs.openSync(file, 'r');
     try {
       const buf = Buffer.alloc(size - from);
-      fs.readSync(fd, buf, 0, buf.length, from);
-      const nl = buf.lastIndexOf(0x0a);
+      const got = buf.subarray(0, fs.readSync(fd, buf, 0, buf.length, from));
+      const nl = got.lastIndexOf(0x0a);
       if (nl < 0) return { text: '', end: from };
-      return { text: buf.subarray(0, nl).toString('utf8'), end: from + nl + 1 };
+      return { text: got.subarray(0, nl).toString('utf8'), end: from + nl + 1 };
     } finally { fs.closeSync(fd); }
   } catch { return undefined; }
 }
@@ -1010,9 +1016,32 @@ export function scanBackgroundAgents(state: TailState): boolean {
   const seen = new Set<string>();
   const statCache = bgStatCacheOf(state);
 
-  for (const { dir, workflow } of backgroundAgentDirs(sessionDir, nowMs)) {
+  for (const { dir, workflow } of backgroundAgentDirs(sessionDir)) {
     let entries: string[];
-    try { entries = fs.readdirSync(dir); } catch { continue; }
+    // The run's latest write: the dir's own mtime (its newest file) and every
+    // agent file's below. The dir alone is not enough: appending to a file
+    // leaves it untouched.
+    let newestWrite = 0;
+    try {
+      entries = fs.readdirSync(dir);
+      newestWrite = fs.statSync(dir).mtimeMs;
+    } catch { continue; }
+    const stats = new Map<string, fs.Stats>();
+    let newestFile = 0;
+    for (const entry of entries) {
+      if (!entry.endsWith('.jsonl')) continue;
+      try {
+        const st = fs.statSync(`${dir}/${entry}`);
+        stats.set(entry, st);
+        newestFile = Math.max(newestFile, st.mtimeMs);
+      } catch { /* gone */ }
+    }
+    newestWrite = Math.max(newestWrite, newestFile);
+    // A workflow run without its record that wrote lately is still going,
+    // even when every agent has been quiet past DONE_AFTER_MS (a long model
+    // call, the script between two phases): its latest writer stays at work,
+    // so the lead's handed-off turn does not read as finished.
+    const runLive = workflow && nowMs - newestWrite < TOOL_DONE_AFTER_MS;
     for (const entry of entries) {
       // `agent-a<16 hex>.jsonl` for Task subagents, `agent-a<name>-<16 hex>.jsonl`
       // for named teammates — so the id class has to allow hyphens/underscores.
@@ -1028,8 +1057,8 @@ export function scanBackgroundAgents(state: TailState): boolean {
       const jsonlPath = `${dir}/${entry}`;
       const metaPath = `${dir}/agent-${agentId}.meta.json`;
 
-      let stat: fs.Stats;
-      try { stat = fs.statSync(jsonlPath); } catch { continue; }
+      const stat = stats.get(entry);
+      if (!stat) continue;
 
       // Reads agent-<id>.meta.json into `c`. Returns whether it parsed, so a
       // sidecar that does not exist yet can be retried later.
@@ -1038,7 +1067,7 @@ export function scanBackgroundAgents(state: TailState): boolean {
           const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
           if (typeof meta.agentType === 'string') c.agentType = meta.agentType;
           if (typeof meta.description === 'string') c.description = meta.description;
-          if (typeof meta.model === 'string' && meta.model) c.model = meta.model;
+          if (typeof meta.model === 'string' && meta.model) c.metaModel = meta.model;
           c.teammate = meta.taskKind === 'in_process_teammate';
           return true;
         } catch { return false; }
@@ -1046,7 +1075,11 @@ export function scanBackgroundAgents(state: TailState): boolean {
 
       let cached = statCache.get(agentId);
       const fileChanged = !cached || cached.mtimeMs !== stat.mtimeMs || cached.size !== stat.size;
-      if (!cached || stat.size < cached.offset) {
+      // Shorter than what was read, or rewritten at the same size: whatever
+      // was read before no longer stands.
+      const rewritten = !!cached && (stat.size < cached.offset
+        || (stat.size === cached.size && stat.mtimeMs !== cached.mtimeMs));
+      if (!cached || rewritten) {
         // New, or rewritten from scratch: read it from the top.
         cached = { mtimeMs: 0, size: 0, offset: 0, lastText: '' };
         // A workflow agent quiet for longer than any tool budget is done
@@ -1057,7 +1090,9 @@ export function scanBackgroundAgents(state: TailState): boolean {
       // Meta again on every change: it can land after the transcript, and
       // `teammate` is what decides idle vs done.
       if (fileChanged || !cached.metaSeen) cached.metaSeen = readMeta(cached) || cached.metaSeen;
-      if (stat.size > cached.offset) {
+      // Unchanged since the last poll: a line still being written past the
+      // offset was read then and is not complete yet.
+      if (fileChanged && stat.size > cached.offset) {
         // Only the lines added since the last poll: a busy agent's file grows
         // to megabytes, and reading it whole every 3s for each of a
         // workflow's agents adds up.
@@ -1069,13 +1104,16 @@ export function scanBackgroundAgents(state: TailState): boolean {
       cached.mtimeMs = stat.mtimeMs;
       cached.size = stat.size;
       statCache.set(agentId, cached);
-      const { agentType, description, model, lastText, lastToolName, lastToolInput, pendingToolId } = cached;
+      const { agentType, description, lastText, lastToolName, lastToolInput, pendingToolId } = cached;
+      // The transcript names the exact model; the meta's is a fallback.
+      const model = cached.model ?? cached.metaModel;
       const teammate = cached.teammate === true;
 
       const ageMs = nowMs - stat.mtimeMs;
       // An unresolved tool_use keeps the agent "running" well past the idle
       // threshold; only a completed last block (text / tool_result) expires at 30s.
-      const isDone = pendingToolId ? ageMs > TOOL_DONE_AFTER_MS : ageMs > DONE_AFTER_MS;
+      const keptAtWork = runLive && stat.mtimeMs === newestFile;
+      const isDone = !keptAtWork && (pendingToolId ? ageMs > TOOL_DONE_AFTER_MS : ageMs > DONE_AFTER_MS);
       // A quiet Task subagent has exited; a quiet teammate is merely between
       // turns and can be messaged again, so it goes idle instead of done.
       const newState: SubagentState = isDone
@@ -1126,6 +1164,7 @@ export function scanBackgroundAgents(state: TailState): boolean {
         changed = true;
       }
     }
+    if (workflow && nowMs - newestWrite > WORKFLOW_RUN_STALE_MS) closedWorkflowRuns.add(dir);
   }
 
   // Drop background-agent entries whose file no longer exists (unlikely but

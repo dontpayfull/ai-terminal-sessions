@@ -1505,8 +1505,18 @@ export class ClaudeTracker {
         //      Stop while sitting at the prompt). NOT urgent, must not flip
         //      the sidebar to ⚠ waiting or fire the permission alert.
         if (isIdleNudgeNotification(e.message, e.kind)) {
-          // Idle nudge: no state change, no alert. Claude already entered
-          // 'idle' via the preceding Stop event.
+          // Idle nudge: no alert. Claude normally entered 'idle' via the
+          // preceding Stop; when that Stop was lost, the nudge is the hooks'
+          // word that the agent sits at the prompt, so a turn still marked
+          // in flight ends here. Not one prompted inside the last minute: the
+          // nudge comes a minute into the idle spell, so such a turn is newer.
+          if ((snap.state === 'working' || snap.state === 'tool')
+              && tsMs - (snap.lastPromptAt?.getTime() ?? 0) > 60_000) {
+            snap.state = 'idle';
+            snap.toolName = undefined;
+            snap.toolInput = undefined;
+            snap.toolSince = undefined;
+          }
           break;
         }
         snap.state = 'waiting';
