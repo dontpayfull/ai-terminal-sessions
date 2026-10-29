@@ -4,7 +4,7 @@ All notable changes to the Terminal Sessions extension.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project uses semantic versioning once past 1.0.0.
 
-## [Unreleased]
+## [0.40.0] — 2026-10-29
 
 ### Added
 
