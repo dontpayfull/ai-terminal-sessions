@@ -47,12 +47,14 @@
 // reused within a window.
 
 import * as vscode from 'vscode';
+import { SEPARATOR_COLOR } from './separator';
 
 const TERMINAL_SCHEME = 'vscode-terminal';
 const COLORS = {
   working: new vscode.ThemeColor('terminal.ansiMagenta'),
   turn: new vscode.ThemeColor('terminal.ansiGreen'),
   stopped: new vscode.ThemeColor('disabledForeground'),
+  separator: SEPARATOR_COLOR,
 } as const;
 const TOOLTIPS = {
   working: 'Agent working',
@@ -60,6 +62,7 @@ const TOOLTIPS = {
   waiting: 'Agent is waiting for you',
   failed: 'Agent turn failed: your turn',
   stopped: 'Session stopped: Start brings it back in this tab',
+  separator: 'Separator',
 } as const;
 /** Coalesces the re-query once the id set becomes complete. */
 const REFIRE_MS = 200;

@@ -27,7 +27,7 @@ import { readClaudeCleanupDays, setClaudeCleanupDays, snoozeCleanupNotice, count
 import type { AgentProvider, AgentId } from './agents/types';
 import type { TerminalTracker } from './terminal-tracker';
 import { setAsDefaultProfile, restorePreviousDefaultProfile } from './default-profile';
-import { separatorLabel, openSeparator } from './separator';
+import { separatorOf, openSeparator } from './separator';
 import { registerTagCommands } from './tag-commands';
 import { readTabOrder } from './tab-order';
 
@@ -436,6 +436,8 @@ export function registerCommands(
     vscode.commands.registerCommand(COMMAND.disableKilledFolder, () => cmdSetSpecialFolder('showKilledFolder', false)),
     vscode.commands.registerCommand(COMMAND.enableTabState, () => cmdSetTabStateOption('tabStateText', 'on')),
     vscode.commands.registerCommand(COMMAND.disableTabState, () => cmdSetTabStateOption('tabStateText', 'off')),
+    vscode.commands.registerCommand(COMMAND.enableSidebarDetails, () => cmdSetTabStateOption('claudeSidebarDetails', 'auto')),
+    vscode.commands.registerCommand(COMMAND.disableSidebarDetails, () => cmdSetTabStateOption('claudeSidebarDetails', 'off')),
     vscode.commands.registerCommand(COMMAND.pickTabStateClear, () => cmdPickTabStateClear()),
     vscode.commands.registerCommand(COMMAND.restoreKilled, (item?: KilledSessionItem) => cmdRestoreKilled(index, registry, claudeTracker, item)),
   );
@@ -1914,7 +1916,31 @@ async function cmdRestart(
  * resume, which also spaces the agents' startups apart. Disposing each tab and
  * creating its replacement at the end, left to right, keeps the tab order.
  */
+/** Re-attach All and Restart All both read the tabs, then replace them one
+ *  by one. A second click while one runs read the same tabs before the first
+ *  had replaced them and opened every session twice, so the clicks that land
+ *  meanwhile are dropped, and the status bar spins until the run ends. */
+let tabsRebuild: string | undefined;
+async function rebuildingTabs(title: string, run: () => Promise<void>): Promise<void> {
+  if (tabsRebuild) {
+    vscode.window.setStatusBarMessage(`${tabsRebuild}: still running, wait for it to finish`, 4000);
+    return;
+  }
+  tabsRebuild = title;
+  try {
+    await vscode.window.withProgress({ location: vscode.ProgressLocation.Window, title: `${title}…` }, run);
+  } finally { tabsRebuild = undefined; }
+}
+
 async function cmdRestartAll(
+  index: SessionIndex,
+  registry: AgentRegistry,
+  claudeTracker: ClaudeTracker,
+): Promise<void> {
+  await rebuildingTabs('Restarting all sessions', () => restartAll(index, registry, claudeTracker));
+}
+
+async function restartAll(
   index: SessionIndex,
   registry: AgentRegistry,
   claudeTracker: ClaudeTracker,
@@ -1934,14 +1960,17 @@ async function cmdRestartAll(
   // or they would all drift to the front and the sections would mix.
   const slots: Array<{ target?: { name: string; tab: vscode.Terminal }; sep?: string; parked?: string; tab: vscode.Terminal }> = [];
   const queued = new Set<string>();
+  // Second and later tabs of one session: closed, or the restart would leave
+  // them behind as dead tabs.
+  const dupes: vscode.Terminal[] = [];
   for (const term of await readTabOrder()) {
-    const sepLabel = separatorLabel(term.name);
+    const sepLabel = separatorOf(term.name);
     if (sepLabel !== undefined) { slots.push({ sep: sepLabel, tab: term }); continue; }
     // eslint-disable-next-line no-await-in-loop
     const name = await resolveTmuxNameForTerminalLive(term, index, cfg.sessionPrefix);
     const s = name ? byName.get(name) : undefined;
     if (!name || !s) { unresolved++; continue; }
-    if (queued.has(name)) continue;
+    if (queued.has(name)) { dupes.push(term); continue; }
     if (s.stopped) {
       skippedStopped++;
       if (s.parked && !term.exitStatus) { queued.add(name); slots.push({ parked: name, tab: term }); }
@@ -1981,6 +2010,10 @@ async function cmdRestartAll(
     title: 'Restarting sessions',
     cancellable: true,
   }, async (progress, token) => {
+    for (const d of dupes) {
+      // eslint-disable-next-line no-await-in-loop
+      try { await disposeAndWait(d, 500); } catch (e) { console.error('[terminal-sessions] closing duplicate tab failed:', e); }
+    }
     let i = -1;
     for (const slot of slots) {
       if (token.isCancellationRequested) break;
@@ -2024,6 +2057,7 @@ async function cmdRestartAll(
 
   const parts: string[] = [`Restarted ${restarted}/${n} session${n === 1 ? '' : 's'}`];
   if (resumed > 0) parts.push(`resumed ${resumed}`);
+  if (dupes.length > 0) parts.push(`${dupes.length} duplicate tab${dupes.length === 1 ? '' : 's'} closed`);
   if (skippedStopped > 0) parts.push(`${skippedStopped} stopped`);
   if (failed > 0) parts.push(`${failed} failed`);
   if (restarted + failed < n) parts.push(`${n - restarted - failed} cancelled`);
@@ -2706,12 +2740,23 @@ async function cmdNewPersistent(index: SessionIndex, targetUri?: vscode.Uri): Pr
  *
  * `includeLive` (the "..." menu variant) re-attaches live tabs too, as a soft
  * reconnect: the tmux session keeps running, only the tab's client is new.
+ *
+ * One run at a time, shared with Restart All (see rebuildingTabs).
  */
 async function cmdReattachAll(
   index: SessionIndex,
   registry: AgentRegistry,
   claudeTracker: ClaudeTracker,
   includeLive = false,
+): Promise<void> {
+  await rebuildingTabs('Re-attaching session tabs', () => reattachAll(index, registry, claudeTracker, includeLive));
+}
+
+async function reattachAll(
+  index: SessionIndex,
+  registry: AgentRegistry,
+  claudeTracker: ClaudeTracker,
+  includeLive: boolean,
 ): Promise<void> {
   const tmuxPath = await requireTmux();
   if (!tmuxPath) return;
@@ -2732,6 +2777,8 @@ async function cmdReattachAll(
   let skippedLive = 0;
   let unresolved = 0;
   const queued = new Set<string>();
+  // Second and later tabs of one session (a double re-attach left them): closed.
+  const dupes: vscode.Terminal[] = [];
   type Entry = { session: SessionInfo; ghost: vscode.Terminal; softReconnect: boolean; repark?: boolean };
   const toReattach: Entry[] = [];
   // Panel order, separators included: each recreated tab lands at the end of
@@ -2739,7 +2786,7 @@ async function cmdReattachAll(
   // sections would all collapse to the front.
   const slots: Array<{ entry?: Entry; sep?: { tab: vscode.Terminal; label: string }; liveTab?: vscode.Terminal }> = [];
   for (const term of await readTabOrder()) {
-    const sepLabel = separatorLabel(term.name);
+    const sepLabel = separatorOf(term.name);
     if (sepLabel !== undefined) { slots.push({ sep: { tab: term, label: sepLabel } }); continue; }
     const exited = !!term.exitStatus;
     // A reload-restored tab keeps showing the ⚠ "disconnected" badge but carries
@@ -2762,7 +2809,7 @@ async function cmdReattachAll(
     const sMeta = index.getSessionMeta(s.workspaceHash, s.name);
     const keptStopped = s.parked || Boolean(sMeta?.stopped && sMeta?.parked);
     if (s.stopped && !keptStopped) { skippedStopped++; continue; }
-    if (queued.has(name)) continue;
+    if (queued.has(name)) { dupes.push(term); continue; }
     queued.add(name);
     // Soft reconnect: the tmux session is still alive with its program inside,
     // so `tmux attach` fully restores it. Skip the agent resume that would
@@ -2796,7 +2843,12 @@ async function cmdReattachAll(
     if (!tab) continue;
     const name = moveLive ? liveNames.get(tab) : undefined;
     const s = name ? byName.get(name) : undefined;
-    if (!name || !s || queued.has(name)) {
+    if (name && s && queued.has(name)) {
+      dupes.push(tab);
+      slots.splice(i--, 1);
+      continue;
+    }
+    if (!name || !s) {
       skippedLive++;
       slots.splice(i--, 1);
       continue;
@@ -2807,8 +2859,15 @@ async function cmdReattachAll(
     slots[i] = { entry };
   }
 
+  for (const d of dupes) {
+    // eslint-disable-next-line no-await-in-loop
+    try { await disposeAndWait(d, 500); } catch (e) { console.error('[terminal-sessions] closing duplicate tab failed:', e); }
+  }
+  const dupesNote = dupes.length > 0 ? `${dupes.length} duplicate tab${dupes.length === 1 ? '' : 's'} closed` : '';
+
   if (toReattach.length === 0) {
     const parts: string[] = [includeLive ? 'No session terminals to re-attach.' : 'No ghost terminals to re-attach.'];
+    if (dupesNote) parts.push(dupesNote);
     if (skippedLive > 0) parts.push(`${skippedLive} already live`);
     if (unresolved > 0) parts.push(`${unresolved} unrecognized`);
     if (skippedStopped > 0) parts.push(`${skippedStopped} stopped`);
@@ -2946,6 +3005,7 @@ async function cmdReattachAll(
   if (resumed > 0) parts.push(`auto-resumed Claude in ${resumed}`);
   if (separators > 0) parts.push(`${separators} separator${separators === 1 ? '' : 's'} kept in place`);
   if (skippedLive > 0) parts.push(`${skippedLive} already live`);
+  if (dupesNote) parts.push(dupesNote);
   if (unresolved > 0) parts.push(`${unresolved} unrecognized`);
   if (failed > 0) parts.push(`${failed} failed`);
   vscode.window.showInformationMessage(parts.join(' · '));
@@ -4180,11 +4240,14 @@ export async function syncSpecialFolderContexts(): Promise<void> {
   await vscode.commands.executeCommand('setContext', 'terminalSessions.killedFolderEnabled', cfg.showKilledFolder);
   // Agent state on the native terminal tabs: on/off, and how a mark clears.
   await vscode.commands.executeCommand('setContext', 'terminalSessions.tabStateEnabled', cfg.tabStateText === 'on');
+  // Agent details nested under the session rows: on unless the mode is 'off'.
+  await vscode.commands.executeCommand('setContext', 'terminalSessions.sidebarDetailsEnabled', cfg.claudeSidebarDetails !== 'off');
 }
 
-/** Same scope rule as the folder toggles: write where the value is defined. */
+/** Same scope rule as the folder toggles: write where the value is defined.
+ *  Also serves the sidebar details toggle, which writes the same way. */
 async function cmdSetTabStateOption(
-  key: 'tabStateText' | 'tabStateClear' | 'tabStateClearMinutes',
+  key: 'tabStateText' | 'tabStateClear' | 'tabStateClearMinutes' | 'claudeSidebarDetails',
   value: string | number,
 ): Promise<void> {
   const c = vscode.workspace.getConfiguration('terminalSessions');

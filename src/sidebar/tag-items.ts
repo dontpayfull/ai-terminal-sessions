@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { separatorSpec, separatorStyle, SEPARATOR_COLOR } from '../separator';
 import { SessionInfo } from '../types';
 import { TagEntry } from '../tags';
 
@@ -61,9 +62,11 @@ export class TagSeparatorItem extends vscode.TreeItem {
     /** Its id in the tag's order, for a move or a removal. */
     public readonly sepId: string,
   ) {
-    super(label ? `── ${label} ──` : '────────', vscode.TreeItemCollapsibleState.None);
+    // Drawn as its tab reads; a blank one says so, or the row would be empty.
+    const spec = separatorSpec(label);
+    super(separatorStyle(spec) === 'blank' ? '(blank)' : spec, vscode.TreeItemCollapsibleState.None);
     this.id = `tagsep:${workspaceHash}:${tagId}:${sepId}`;
-    this.iconPath = new vscode.ThemeIcon('dash');
+    this.iconPath = new vscode.ThemeIcon('dash', SEPARATOR_COLOR);
     this.contextValue = 'tagSeparator';
     this.tooltip = 'Separator tab. Start All opens it above the next sessions. Drag it to move it; right-click to remove it.';
   }

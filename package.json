@@ -886,6 +886,11 @@
         "category": "Terminal Sessions"
       },
       {
+        "command": "terminalSessions.addSeparatorLastUsed",
+        "title": "Add Session Separator (Last Used)",
+        "category": "Terminal Sessions"
+      },
+      {
         "command": "terminalSessions.keepTabOn",
         "title": "Keep Tab When Stopped",
         "category": "Terminal Sessions"
@@ -1009,6 +1014,16 @@
       {
         "command": "terminalSessions.pickTabStateClear",
         "title": "Tab Marks: When Green Clears...",
+        "category": "Terminal Sessions"
+      },
+      {
+        "command": "terminalSessions.enableSidebarDetails",
+        "title": "Enable Details Under Sessions",
+        "category": "Terminal Sessions"
+      },
+      {
+        "command": "terminalSessions.disableSidebarDetails",
+        "title": "Disable Details Under Sessions",
         "category": "Terminal Sessions"
       },
       {
@@ -1227,6 +1242,14 @@
           "when": "terminalSessions.killedFolderEnabled"
         },
         {
+          "command": "terminalSessions.enableSidebarDetails",
+          "when": "!terminalSessions.sidebarDetailsEnabled"
+        },
+        {
+          "command": "terminalSessions.disableSidebarDetails",
+          "when": "terminalSessions.sidebarDetailsEnabled"
+        },
+        {
           "command": "terminalSessions.openNote",
           "when": "false"
         },
@@ -1360,6 +1383,10 @@
         },
         {
           "command": "terminalSessions.addSeparator",
+          "group": "navigation@12"
+        },
+        {
+          "command": "terminalSessions.addSeparatorLastUsed",
           "group": "navigation@12"
         },
         {
@@ -1588,6 +1615,16 @@
           "command": "terminalSessions.pickTabStateClear",
           "when": "view == terminalSessions.sessions && terminalSessions.tabStateEnabled",
           "group": "3_tabs@1"
+        },
+        {
+          "command": "terminalSessions.disableSidebarDetails",
+          "when": "view == terminalSessions.sessions && terminalSessions.sidebarDetailsEnabled",
+          "group": "4_details@0"
+        },
+        {
+          "command": "terminalSessions.enableSidebarDetails",
+          "when": "view == terminalSessions.sessions && !terminalSessions.sidebarDetailsEnabled",
+          "group": "4_details@0"
         },
         {
           "command": "terminalSessions.disableNotesFolder",
@@ -2049,6 +2086,11 @@
         {
           "id": "terminalSessions.separator",
           "title": "Session Separator",
+          "icon": "dash"
+        },
+        {
+          "id": "terminalSessions.separatorLastUsed",
+          "title": "Session Separator (Last Used)",
           "icon": "dash"
         }
       ]

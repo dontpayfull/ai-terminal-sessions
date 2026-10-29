@@ -182,7 +182,8 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
         e.affectsConfiguration('terminalSessions.showKilledFolder') ||
         e.affectsConfiguration('terminalSessions.tabStateText') ||
         e.affectsConfiguration('terminalSessions.tabStateClear') ||
-        e.affectsConfiguration('terminalSessions.tabStateClearMinutes')
+        e.affectsConfiguration('terminalSessions.tabStateClearMinutes') ||
+        e.affectsConfiguration('terminalSessions.claudeSidebarDetails')
       ) { void syncSpecialFolderContexts(); refreshSidebar(); }
       if (e.affectsConfiguration('terminalSessions.brandedNotifier')) onNotifierSettingChanged();
       if (e.affectsConfiguration('terminalSessions.claudeNoFlicker')) {

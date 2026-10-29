@@ -8,7 +8,7 @@ import { SessionTreeItem } from './sidebar/items';
 import { TagTreeItem, TagSeparatorItem } from './sidebar/tag-items';
 import { findVerifiedTabForSession, resolveTmuxNameForTerminalLive, sessionNameForTerminal } from './profile-provider';
 import { currentWorkspace, parseSessionName } from './workspace-id';
-import { separatorLabel, openSeparator, isSeparator } from './separator';
+import { separatorOf, separatorSpec, openSeparator, isSeparator, askSeparator } from './separator';
 import { readTabOrder } from './tab-order';
 import {
   TagLayoutItem, MemberAction, cleanTagName, tagEntries, toLayout, trimLayout, startPlan, newSeparatorId,
@@ -251,7 +251,7 @@ async function openTabsLayout(index: SessionIndex): Promise<{ layout: TagLayoutI
   const tabs = new Map<string, vscode.Terminal>();
   for (const t of await readTabOrder()) {
     if (t.exitStatus) continue;
-    const sep = separatorLabel(t.name);
+    const sep = separatorOf(t.name);
     // eslint-disable-next-line no-await-in-loop
     if (sep !== undefined && await isSeparator(t)) {
       const id = newSeparatorId();
@@ -332,7 +332,7 @@ async function cmdSaveOpenAsTag(index: SessionIndex): Promise<void> {
 function openSeparatorCounts(): Map<string, number> {
   const out = new Map<string, number>();
   for (const t of vscode.window.terminals) {
-    const sep = t.exitStatus ? undefined : separatorLabel(t.name);
+    const sep = t.exitStatus ? undefined : separatorOf(t.name);
     if (sep !== undefined) out.set(sep, (out.get(sep) ?? 0) + 1);
   }
   return out;
@@ -358,7 +358,8 @@ async function cmdStartTag(index: SessionIndex, deps: TagCommandDeps, item?: Tag
   // eslint-disable-next-line no-await-in-loop
   for (const s of members) actions.set(s.name, await actionFor(s));
   const entries = tagEntries(index.getTags()[id]?.layout, members)
-    .map(e => ('separator' in e ? e : { session: { name: e.session.name, action: actions.get(e.session.name)! } }));
+    // Stored separators compare in their current form with the open tabs.
+    .map(e => ('separator' in e ? { ...e, separator: separatorSpec(e.separator) } : { session: { name: e.session.name, action: actions.get(e.session.name)! } }));
   let steps = startPlan(entries, openSeparatorCounts());
   // Separator tabs need a POSIX shell.
   if (process.platform === 'win32') steps = steps.filter(s => 'session' in s);
@@ -464,14 +465,13 @@ async function cmdAddTagSeparator(index: SessionIndex, item?: TagTreeItem): Prom
   const all = await allSessions(index);
   const id = await resolveTag(index, item, all, 'Add a separator to which tag?');
   if (!id) return;
-  const label = await vscode.window.showInputBox({
-    title: `Add Separator to #${tagName(index, id) ?? ''}`,
-    prompt: 'Name shown on the separator tab. Empty for a plain line. It lands at the end: drag it into place.',
-    placeHolder: 'e.g. Research',
-  });
-  if (label === undefined) return;
+  const sep = await askSeparator(
+    `Add Separator to #${tagName(index, id) ?? ''}`,
+    'Name shown on the separator tab. Empty for a plain line. It lands at the end: drag it into place.',
+  );
+  if (sep === undefined) return;
   if (tagName(index, id) === undefined) { gone(); return; }
-  index.setTagLayout(id, [...fullLayout(index, id, await allSessions(index)), { separator: label.trim(), id: newSeparatorId() }]);
+  index.setTagLayout(id, [...fullLayout(index, id, await allSessions(index)), { separator: sep, id: newSeparatorId() }]);
   refreshSidebar();
 }
 

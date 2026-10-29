@@ -4,6 +4,22 @@ All notable changes to the Terminal Sessions extension.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project uses semantic versioning once past 1.0.0.
 
+## [Unreleased]
+
+### Added
+
+- **Disable Details Under Sessions** in the sidebar's ⋯ menu removes the arrow on session rows and everything it opened (last prompt and answer, model, cost, agents). **Enable Details Under Sessions** brings them back. It sets `terminalSessions.claudeSidebarDetails` to `off` or `auto`.
+
+- **Separator looks.** Adding a separator now asks three short questions after the name: the look (heavy, double or thin line, dots, band, solid block, light shade, or a blank row), where the name sits (centred, after a short lead, or at the very start) and the length (20, 30 or 42 characters). Each list shows the separator as it will read, with the last choice highlighted. The name is upper-cased and the separator is blue. **Session Separator (Last Used)**, in the `+ ∨` dropdown and the tab menu, asks only for the name (nothing, when the last was blank) and reuses the last look. The folder name no longer shows next to a new separator. Re-attach All, Restart All and a tag's Start All recreate each separator as it was; an older `── name ──` one becomes a centred heavy line.
+
+### Changed
+
+- The rows nested under a session are grey now, so the sessions stand out. Only an agent at work keeps a coloured icon.
+
+### Fixed
+
+- Clicking **Re-attach All Terminals** twice opened every session in two tabs. Re-attach and **Restart All Sessions** now run one at a time: while one runs, the status bar spins and further clicks on either are ignored. A re-attach also closes extra tabs of the same session, so one more click cleans up tabs a double click left behind; Restart All closes them too.
+
 ## [0.39.0] — 2026-10-26
 
 ### Added

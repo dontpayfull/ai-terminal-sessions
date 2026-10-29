@@ -293,18 +293,31 @@ from where you are typing.
 
 A long tab list reads better in sections. Pick **Session Separator** from
 the `+ ∨` dropdown (or **Add Session Separator** from a tab's
-right-click menu), type a name (or leave it empty for a plain line)
-and drag the new tab where the section starts.
+right-click menu), type a name (or leave it empty for a plain line),
+pick how it looks and drag the new tab where the section starts.
 
 ```
  my-app #3
- ── Research ──          ← separator tab
+ ━━━━━━━━━  RESEARCH  ━━━━━━━━━  ← heavy line, centred
  my-app - Pricing #7
  my-app - Competitors #9
- ── Ops ──
+ ▓▓  OPS  ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓  ← band, left
  infra - Deploy #12
+                                 ← blank
+ infra - Logs #14
+ ══════════════════════════════  ← double line, no name
 ```
 
+- Three short questions after the name: the look (heavy, double or
+  thin line, dots, band, solid block, light shade, or a blank row),
+  where the name sits (centred, after a short lead, or at the very
+  start) and the length (20, 30 or 42 characters). Each list shows the
+  separator as it will read, with your last choice highlighted
+- **Session Separator (Last Used)** in the same menus asks only for the
+  name (nothing, when the last was blank) and reuses the look, position
+  and length picked last
+- Every separator but the blank one is blue, the name upper-cased; at
+  one length they all end in the same column
 - Clicking a separator does not leave you on an empty screen: focus goes
   straight back to the tab you were on
 - Rename or close it like any tab; closing removes it. A colour picked

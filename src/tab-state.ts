@@ -44,6 +44,7 @@ import { parseSessionName } from './workspace-id';
 import { agentsAtWork, type ClaudeTracker, type ClaudeSnapshot } from './claude-tracker';
 import { outcomeIsBad } from './outcome';
 import { TabColorDecorations, type MarkedTab } from './tab-color';
+import { separatorStyle } from './separator';
 
 const execFileP = promisify(execFile);
 
@@ -250,6 +251,16 @@ export async function activePanes(tmux: string, prefix: string): Promise<PaneRow
   return rows;
 }
 
+/** Adds the line and block separator tabs, whose name is painted blue
+ *  whatever the agent-state options say. Keyed apart from the sessions. */
+function separatorMarks(into: Map<string, MarkedTab>): Map<string, MarkedTab> {
+  vscode.window.terminals.forEach((term, i) => {
+    const style = term.exitStatus ? undefined : separatorStyle(term.name);
+    if (style && style !== 'blank') into.set(`sep:${i}:${term.name}`, { term, kind: 'separator', why: 'separator' });
+  });
+  return into;
+}
+
 class TabStateWriter {
   private readonly last = new Map<string, string>();
   private readonly retryAt = new Map<string, number>();
@@ -317,21 +328,25 @@ class TabStateWriter {
     try {
       const cfg = getConfig();
       if (cfg.tabStateText !== 'on') {
-        this.colors.set(new Map());
+        this.colors.set(separatorMarks(new Map()));
         await this.clearAll();
         if (!this.blankedOnce) { this.blankedOnce = true; await this.blankThisWindow(cfg.tmuxPath, cfg.sessionPrefix); }
         return;
       }
       const tmux = await tmuxMod.detectTmuxPath(cfg.tmuxPath);
-      if (!tmux || this.disposed) return;
-      if (!(await this.checkPassthrough(tmux)) || this.disposed) return;
+      // Separators need no tmux: their colour goes out on every way out.
+      if (this.disposed) return;
+      if (!tmux) { this.colors.set(separatorMarks(new Map())); return; }
+      const passthrough = await this.checkPassthrough(tmux);
+      if (this.disposed) return;
+      if (!passthrough) { this.colors.set(separatorMarks(new Map())); return; }
       // No `${sequence}` in the user's template means nothing we write can be
       // seen — so write nothing. (Re-read every tick: adding it by hand starts
       // the text flowing without a reload.)
-      if (!templateShowsSequence()) { this.colors.set(new Map()); await this.clearAll(); return; }
+      if (!templateShowsSequence()) { this.colors.set(separatorMarks(new Map())); await this.clearAll(); return; }
       let panes: PaneRow[] = [];
       try { panes = await activePanes(tmux, cfg.sessionPrefix); }
-      catch { this.last.clear(); this.passthroughOk = false; this.colors.set(new Map()); return; } // server gone: re-ask everything
+      catch { this.last.clear(); this.passthroughOk = false; this.colors.set(separatorMarks(new Map())); return; } // server gone: re-ask everything
       if (this.disposed) return;
       const now = Date.now();
       const live = new Set<string>();
@@ -380,7 +395,7 @@ class TabStateWriter {
         }
         this.write(p.session, p.tty, text, code, debug);
       }
-      this.colors.set(marked);
+      this.colors.set(separatorMarks(marked));
       // A session that disappeared took its tab with it; drop the memory so a
       // reused name starts clean.
       for (const name of Array.from(this.last.keys())) {

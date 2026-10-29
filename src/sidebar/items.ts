@@ -5,7 +5,7 @@ import { ClaudeSnapshot, agentsAtWork, isBusy } from '../claude-tracker';
 import { tabStateKind } from '../tab-state';
 import { SubagentSnapshot } from '../claude-transcript';
 import { outcomeLabel } from '../outcome';
-import { STOPPED_URI_SCHEME, BRANCH_URI_SCHEME, getConfig } from '../config';
+import { STOPPED_URI_SCHEME, BRANCH_URI_SCHEME, DETAIL_URI_SCHEME, getConfig } from '../config';
 
 /** Marker prefixed to a session row's label when that session has a note.
  *  Deliberately a label PREFIX and not a FileDecoration badge: a row owns a
@@ -535,11 +535,18 @@ export class SessionTreeItem extends vscode.TreeItem {
   }
 }
 
+/** resourceUri for the rows under a session: the DetailDecorationProvider
+ *  greys their label, so only the session rows themselves stand out. */
+export const DETAIL_URI = vscode.Uri.parse(`${DETAIL_URI_SCHEME}:detail`);
+/** Icon colour of those rows, unless they show live work. */
+export const DETAIL_COLOR = new vscode.ThemeColor('descriptionForeground');
+
 export class ClaudeDetailItem extends vscode.TreeItem {
   constructor(label: string, description?: string, iconId?: string) {
     super(label, vscode.TreeItemCollapsibleState.None);
     if (description) this.description = description;
-    if (iconId) this.iconPath = new vscode.ThemeIcon(iconId);
+    if (iconId) this.iconPath = new vscode.ThemeIcon(iconId, DETAIL_COLOR);
+    this.resourceUri = DETAIL_URI;
     this.contextValue = 'claudeDetail';
     this.tooltip = description ? `${label} ${description}` : label;
   }
@@ -590,9 +597,10 @@ export class SubagentsFolderItem extends vscode.TreeItem {
       : vscode.TreeItemCollapsibleState.Collapsed;
     super(label, collapse);
     this.contextValue = 'subagentsFolder';
+    this.resourceUri = DETAIL_URI;
     this.iconPath = new vscode.ThemeIcon(
       'hubot',
-      new vscode.ThemeColor(active > 0 ? 'terminalSessions.workingIcon' : 'terminalSessions.idleIcon'),
+      active > 0 ? new vscode.ThemeColor('terminalSessions.workingIcon') : DETAIL_COLOR,
     );
     const lines = [
       `**🤖 Agents** (${topLevelSubagents.length} total)`,
@@ -643,16 +651,14 @@ export class SubagentTreeItem extends vscode.TreeItem {
 
     super(label, initialCollapse);
     this.contextValue = 'subagent';
+    this.resourceUri = DETAIL_URI;
 
+    // Only an agent at work keeps a colour; idle and done ones stay grey.
     const icon = SUBAGENT_ICONS[subagent.state];
-    let color: string | undefined;
-    switch (subagent.state) {
-      case 'working': color = 'terminalSessions.workingIcon'; break;
-      case 'tool':    color = 'terminalSessions.toolIcon';    break;
-      case 'idle':    color = 'terminalSessions.idleIcon';    break;
-      case 'done':    color = 'terminalSessions.idleIcon';    break;
-    }
-    this.iconPath = new vscode.ThemeIcon(icon, color ? new vscode.ThemeColor(color) : undefined);
+    const color = subagent.state === 'working' ? new vscode.ThemeColor('terminalSessions.workingIcon')
+      : subagent.state === 'tool' ? new vscode.ThemeColor('terminalSessions.toolIcon')
+      : DETAIL_COLOR;
+    this.iconPath = new vscode.ThemeIcon(icon, color);
 
     const start = subagent.startedAt.getTime();
     const end = subagent.completedAt?.getTime() || Date.now();

@@ -1,8 +1,8 @@
 import * as vscode from 'vscode';
 import { SessionIndex, enrichSessions, groupByWorkspace } from '../session-manager';
 import * as tmux from '../tmux';
-import { getConfig, setSortMode, VIEW_ID, SidebarSortMode, STOPPED_URI_SCHEME, BRANCH_URI_SCHEME } from '../config';
-import { WorkspaceTreeItem, GroupTreeItem, BranchClusterItem, SessionTreeItem, SubagentTreeItem, SubagentsFolderItem, FavoritesFolderItem, OpenFolderItem, ActiveFolderItem, BackgroundFolderItem, ActivityFolderItem, KilledFolderItem, KilledSessionItem, CleanupNoticeItem, FilterHeaderItem, NotesFolderItem, NoteTreeItem, NoteRow, SessionsFolderItem, buildClaudeDetails } from './items';
+import { getConfig, setSortMode, VIEW_ID, SidebarSortMode, STOPPED_URI_SCHEME, BRANCH_URI_SCHEME, DETAIL_URI_SCHEME } from '../config';
+import { WorkspaceTreeItem, GroupTreeItem, BranchClusterItem, SessionTreeItem, SubagentTreeItem, SubagentsFolderItem, FavoritesFolderItem, OpenFolderItem, ActiveFolderItem, BackgroundFolderItem, ActivityFolderItem, KilledFolderItem, KilledSessionItem, CleanupNoticeItem, FilterHeaderItem, NotesFolderItem, NoteTreeItem, NoteRow, SessionsFolderItem, buildClaudeDetails, DETAIL_URI, DETAIL_COLOR } from './items';
 import { NoteStore } from '../notes';
 import { shouldShowCleanupNotice, readClaudeCleanupDays, countExpiringTranscripts, ExpiryInfo } from '../notices';
 import { sessionNameForTerminal, resolveTmuxNameForTerminalLive } from '../profile-provider';
@@ -20,6 +20,14 @@ class StoppedSessionDecorationProvider implements vscode.FileDecorationProvider 
       color: new vscode.ThemeColor('disabledForeground'),
       tooltip: 'Stopped',
     };
+  }
+}
+
+/** Greys the label of the rows under a session (agent details, subagents). */
+class DetailDecorationProvider implements vscode.FileDecorationProvider {
+  provideFileDecoration(uri: vscode.Uri): vscode.FileDecoration | undefined {
+    if (uri.scheme !== DETAIL_URI_SCHEME) return undefined;
+    return { color: new vscode.ThemeColor('descriptionForeground') };
   }
 }
 
@@ -862,7 +870,8 @@ class SessionsTreeProvider
           `${el.subagent.currentTool}${preview}`,
           vscode.TreeItemCollapsibleState.None,
         );
-        item.iconPath = new vscode.ThemeIcon('tools');
+        item.iconPath = new vscode.ThemeIcon('tools', DETAIL_COLOR);
+        item.resourceUri = DETAIL_URI;
         item.contextValue = 'subagentDetail';
         out.push(item);
       }
@@ -871,7 +880,8 @@ class SessionsTreeProvider
           `"${el.subagent.lastMessage}"`,
           vscode.TreeItemCollapsibleState.None,
         );
-        item.iconPath = new vscode.ThemeIcon('hubot');
+        item.iconPath = new vscode.ThemeIcon('hubot', DETAIL_COLOR);
+        item.resourceUri = DETAIL_URI;
         item.contextValue = 'subagentDetail';
         out.push(item);
       }
@@ -1183,6 +1193,7 @@ export function registerSidebar(
   ctx.subscriptions.push(
     vscode.window.registerFileDecorationProvider(new StoppedSessionDecorationProvider()),
     vscode.window.registerFileDecorationProvider(new BranchSetDecorationProvider()),
+    vscode.window.registerFileDecorationProvider(new DetailDecorationProvider()),
   );
   treeViewRef = treeView;
   // A note written (or deleted) anywhere — this window's editor, the delete

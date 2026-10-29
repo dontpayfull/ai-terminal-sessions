@@ -169,6 +169,7 @@ export async function setFilterMode(mode: SidebarFilterMode): Promise<void> {
 
 export const PROFILE_ID = 'terminalSessions.persistent';
 export const SEPARATOR_PROFILE_ID = 'terminalSessions.separator';
+export const SEPARATOR_LAST_PROFILE_ID = 'terminalSessions.separatorLastUsed';
 export const VIEW_ID = 'terminalSessions.sessions';
 export const STOPPED_URI_SCHEME = 'terminal-sessions-stopped';
 // resourceUri scheme for fork branch-set members. The BranchSetDecorationProvider
@@ -176,6 +177,9 @@ export const STOPPED_URI_SCHEME = 'terminal-sessions-stopped';
 // needs no index lookup. Distinct from the stopped scheme; a row has one
 // resourceUri, so a stopped+branched session keeps the stopped decoration.
 export const BRANCH_URI_SCHEME = 'terminal-sessions-branch';
+// resourceUri scheme for the rows under a session (agent details, subagents).
+// The DetailDecorationProvider greys their label so they read as secondary.
+export const DETAIL_URI_SCHEME = 'terminal-sessions-detail';
 
 export const COMMAND = {
   toggleAllAlerts: 'terminalSessions.toggleAllAlerts',
@@ -194,6 +198,7 @@ export const COMMAND = {
   toggleFavorite: 'terminalSessions.toggleFavorite',
   lockSession: 'terminalSessions.lockSession',
   addSeparator: 'terminalSessions.addSeparator',
+  addSeparatorLastUsed: 'terminalSessions.addSeparatorLastUsed',
   keepTabOn: 'terminalSessions.keepTabOn',
   keepTabOff: 'terminalSessions.keepTabOff',
   toggleKeepTab: 'terminalSessions.toggleKeepTab',
@@ -285,6 +290,8 @@ export const COMMAND = {
   disableKilledFolder: 'terminalSessions.disableKilledFolder',
   enableTabState: 'terminalSessions.enableTabState',
   disableTabState: 'terminalSessions.disableTabState',
+  enableSidebarDetails: 'terminalSessions.enableSidebarDetails',
+  disableSidebarDetails: 'terminalSessions.disableSidebarDetails',
   pickTabStateClear: 'terminalSessions.pickTabStateClear',
   restoreKilled: 'terminalSessions.restoreKilled',
 } as const;
