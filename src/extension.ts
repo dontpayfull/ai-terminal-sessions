@@ -3,7 +3,8 @@ import { SessionIndex } from './session-manager';
 import { registerPersistentProfile } from './profile-provider';
 import { registerSeparators } from './separator';
 import { registerCommands, syncActiveTerminalContext, syncSpecialFolderContexts, wireRenameFlow } from './commands';
-import { registerSidebar, refreshSidebar, revealSessionInSidebar } from './sidebar/tree-provider';
+import { registerSidebar, refreshSidebar, revealSessionInSidebar, setSidebarTitleSource } from './sidebar/tree-provider';
+import { TitleFollower } from './title-follow';
 import { StatusBar } from './status-bar';
 import { maybePromptResume } from './toast';
 import { TerminalTracker } from './terminal-tracker';
@@ -12,7 +13,7 @@ import { maybeOfferRestore } from './restore';
 import { ClaudeTracker } from './claude-tracker';
 import { AgentRegistry } from './agents/registry';
 import { ClaudeSearchIndex } from './claude-search';
-import { resolveTmuxNameForTerminalLive, openTerminalForSession } from './profile-provider';
+import { resolveTmuxNameForTerminalLive, openTerminalForSession, setFollowedTitleSource } from './profile-provider';
 import { parseSessionName } from './workspace-id';
 import { getConfig } from './config';
 import { registerRevealPath } from './reveal-path';
@@ -116,6 +117,15 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   tracker.start();
   ctx.subscriptions.push(tracker, wireRenameFlow(tracker, index, registry, claudeTracker));
 
+  // Follow Conversation Title (off by default): rows and tabs show the title
+  // of the conversation running in each session.
+  const titles = new TitleFollower(index, claudeTracker, registry, tracker, refreshSidebar);
+  setSidebarTitleSource(n => titles.titleFor(n));
+  setFollowedTitleSource(n => titles.titleFor(n));
+  ctx.subscriptions.push(titles, {
+    dispose: () => { setSidebarTitleSource(undefined); setFollowedTitleSource(undefined); },
+  });
+
   // Monotonic token for the async active-terminal resolution below: a slow
   // PID walk for a tab you already left must not clobber the newer result
   // (the tracker's "which tab is the user looking at" depends on it).
@@ -123,6 +133,7 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   const onActiveTerminal = (t: vscode.Terminal | undefined): void => {
     // Reading the tab order steps through every tab: not the user looking.
     if (isWalkingTabs()) return;
+    titles.onTabActivated(t);
     const gen = ++activeResolveGen;
     // Reflect the new active terminal's lock state for the native tab menu's
     // Kill ↔ locked-hint gate. Runs on every switch (incl. t === undefined,
@@ -183,7 +194,8 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
         e.affectsConfiguration('terminalSessions.tabStateText') ||
         e.affectsConfiguration('terminalSessions.tabStateClear') ||
         e.affectsConfiguration('terminalSessions.tabStateClearMinutes') ||
-        e.affectsConfiguration('terminalSessions.claudeSidebarDetails')
+        e.affectsConfiguration('terminalSessions.claudeSidebarDetails') ||
+        e.affectsConfiguration('terminalSessions.followConversationTitle')
       ) { void syncSpecialFolderContexts(); refreshSidebar(); }
       if (e.affectsConfiguration('terminalSessions.brandedNotifier')) onNotifierSettingChanged();
       if (e.affectsConfiguration('terminalSessions.claudeNoFlicker')) {

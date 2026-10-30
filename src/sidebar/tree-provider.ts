@@ -13,6 +13,12 @@ import { tagEntries, toLayout, layoutKey, moveInLayout } from '../tags';
 
 const DRAG_MIME = 'application/vnd.code.tree.terminalsessions';
 
+/** Follow Conversation Title: the title a session row shows (title-follow.ts). */
+let sidebarTitle: ((sessionName: string) => string | undefined) | undefined;
+export function setSidebarTitleSource(fn: ((sessionName: string) => string | undefined) | undefined): void {
+  sidebarTitle = fn;
+}
+
 class StoppedSessionDecorationProvider implements vscode.FileDecorationProvider {
   provideFileDecoration(uri: vscode.Uri): vscode.FileDecoration | undefined {
     if (uri.scheme !== STOPPED_URI_SCHEME) return undefined;
@@ -318,6 +324,7 @@ class SessionsTreeProvider
     const item = new SessionTreeItem(
       s, this.claude.getSnapshot(s.name), cfg.claudeSidebarDetails, cfg.contextWarnPct, inCluster,
       this.notes.has(s.workspaceHash, s.name),
+      s.stopped ? undefined : sidebarTitle?.(s.name),
     );
     // Mirror rows (Sessions Activity) skip the cache: reveal/getParent must
     // keep resolving to the canonical row inside its group.

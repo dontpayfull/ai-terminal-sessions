@@ -70,6 +70,8 @@ export interface Config {
   /** Under the 'timer' clear mode: minutes a finished mark stays (1..1440). */
   tabStateClearMinutes: number;
   tabStateDebug: boolean;
+  /** Sidebar rows and tabs show the current conversation's title. */
+  followConversationTitle: boolean;
 }
 
 /** Longest a finished tab mark can be told to stay: one day. */
@@ -154,6 +156,7 @@ export function getConfig(): Config {
     tabStateClear: c.get<string>('tabStateClear', 'seen') === 'timer' ? 'timer' : 'seen',
     tabStateClearMinutes: clampClearMinutes(c.get<number>('tabStateClearMinutes', 30)),
     tabStateDebug: c.get<boolean>('tabStateDebug', false) === true,
+    followConversationTitle: c.get<boolean>('followConversationTitle', false) === true,
   };
 }
 
@@ -292,6 +295,9 @@ export const COMMAND = {
   disableTabState: 'terminalSessions.disableTabState',
   enableSidebarDetails: 'terminalSessions.enableSidebarDetails',
   disableSidebarDetails: 'terminalSessions.disableSidebarDetails',
+  enableFollowTitle: 'terminalSessions.enableFollowTitle',
+  disableFollowTitle: 'terminalSessions.disableFollowTitle',
+  followTitleAgain: 'terminalSessions.followTitleAgain',
   pickTabStateClear: 'terminalSessions.pickTabStateClear',
   restoreKilled: 'terminalSessions.restoreKilled',
 } as const;

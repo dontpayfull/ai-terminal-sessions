@@ -435,12 +435,36 @@ Also rename the current Claude conversation to "api"?
   names the conversation without asking (a `/rename` name still asks),
   `never` renames only the row and the tab.
 - Nothing is renamed on its own: new sessions and conversations keep the
-  names they start with until you rename them.
+  names they start with until you rename them, unless Follow
+  Conversation Title is on (below).
 
 VS Code edits a tab's name in place in the tab list, and that list is
 redrawn whenever any tab's state changes, so with an agent working on
 that window the edit can be thrown away mid-word. Rename from the sidebar
 then; it asks in a box at the top of the window.
+
+### Follow Conversation Title (experimental)
+
+**Enable Follow Conversation Title** in the view's `⋯` menu (off by
+default) names each running session after the conversation in it: the
+title the agent generated, or one set with its own `/rename`. Claude,
+Codex, Grok, Antigravity and OpenCode are covered; subagents are not
+followed.
+
+- The sidebar row takes a new title a couple of seconds after it
+  settles. The session's own name stays in the row's tooltip, and the
+  alphabetical sort keeps using it, so rows do not jump.
+- VS Code renames only the active tab, and making another tab active
+  would send your keys there. So a tab takes its title when it is the
+  active one, when you switch to it, when Re-attach or Restart All
+  recreate it, or (macOS) when the window has had no focus and no key
+  or mouse input for a minute: then the waiting tabs are renamed in one
+  go and the tab and editor you had are given back.
+- **Rename…** while following keeps your name for that session. An
+  empty name, or **Follow Conversation Title Again** on the row, goes
+  back to following.
+- The tmux session is never renamed. **Disable** gives every tab it
+  renamed its own name back as you open it.
 
 ### A day with it
 

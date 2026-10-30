@@ -31,6 +31,21 @@ export function isWalkingTabs(): boolean {
   return walking > 0;
 }
 
+/** Runs `fn` as a tab walk of its own: never at the same time as another
+ *  walk, and with the tab-switch handlers standing aside meanwhile. */
+export function runTabWalk<T>(fn: () => Promise<T>): Promise<T> {
+  const run = queue.then(async () => {
+    const start = vscode.window.activeTerminal;
+    walking++;
+    try { return await fn(); } finally {
+      walking--;
+      if (vscode.window.activeTerminal !== start) walkEnded.fire();
+    }
+  });
+  queue = run.catch(() => undefined);
+  return run;
+}
+
 function listed(): vscode.Terminal[] {
   return vscode.window.terminals.filter(t =>
     !(t.creationOptions as vscode.TerminalOptions | undefined)?.hideFromUser);

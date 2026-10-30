@@ -272,6 +272,11 @@
           "default": "auto",
           "description": "Show per-session Claude Code details (last user/assistant message, current tool, model, tokens) as nested rows in the sidebar. Requires the Claude hook to be installed."
         },
+        "terminalSessions.followConversationTitle": {
+          "type": "boolean",
+          "default": false,
+          "description": "Experimental. Each running session's sidebar row and terminal tab show the title of the conversation in it (the agent's generated title, or one set with its own /rename), updated as it changes. The sidebar follows at once. VS Code renames only the active tab, so a tab in the background takes its new title when you open it, or (macOS) when the window has had no focus and no key or mouse input for a minute. A name you give a session with Rename keeps it; clearing the name, or Follow Conversation Title Again, goes back to following. The tmux session is never renamed."
+        },
         "terminalSessions.showCompletedSubagents": {
           "type": "boolean",
           "default": true,
@@ -1017,6 +1022,21 @@
         "category": "Terminal Sessions"
       },
       {
+        "command": "terminalSessions.enableFollowTitle",
+        "title": "Enable Follow Conversation Title",
+        "category": "Terminal Sessions"
+      },
+      {
+        "command": "terminalSessions.disableFollowTitle",
+        "title": "Disable Follow Conversation Title",
+        "category": "Terminal Sessions"
+      },
+      {
+        "command": "terminalSessions.followTitleAgain",
+        "title": "Follow Conversation Title Again",
+        "category": "Terminal Sessions"
+      },
+      {
         "command": "terminalSessions.enableSidebarDetails",
         "title": "Enable Details Under Sessions",
         "category": "Terminal Sessions"
@@ -1244,6 +1264,18 @@
         {
           "command": "terminalSessions.enableSidebarDetails",
           "when": "!terminalSessions.sidebarDetailsEnabled"
+        },
+        {
+          "command": "terminalSessions.enableFollowTitle",
+          "when": "!terminalSessions.followTitleEnabled"
+        },
+        {
+          "command": "terminalSessions.disableFollowTitle",
+          "when": "terminalSessions.followTitleEnabled"
+        },
+        {
+          "command": "terminalSessions.followTitleAgain",
+          "when": "false"
         },
         {
           "command": "terminalSessions.disableSidebarDetails",
@@ -1627,6 +1659,16 @@
           "group": "4_details@0"
         },
         {
+          "command": "terminalSessions.disableFollowTitle",
+          "when": "view == terminalSessions.sessions && terminalSessions.followTitleEnabled",
+          "group": "4_details@1"
+        },
+        {
+          "command": "terminalSessions.enableFollowTitle",
+          "when": "view == terminalSessions.sessions && !terminalSessions.followTitleEnabled",
+          "group": "4_details@1"
+        },
+        {
           "command": "terminalSessions.disableNotesFolder",
           "when": "view == terminalSessions.sessions && terminalSessions.notesFolderEnabled",
           "group": "2_folders@-1"
@@ -1937,6 +1979,11 @@
           "command": "terminalSessions.editNote",
           "when": "view == terminalSessions.sessions && viewItem =~ /^session(\\.stopped)?(\\.fav)?(\\.(muted|alert))?(\\.forkable)?(\\.branched)?(\\.locked)?(\\.yoloO(n|ff))?(\\.attn)?$/",
           "group": "8_note@0"
+        },
+        {
+          "command": "terminalSessions.followTitleAgain",
+          "when": "view == terminalSessions.sessions && terminalSessions.followTitleEnabled && viewItem =~ /^session($|\\.)/ && !(viewItem =~ /^session\\.stopped/)",
+          "group": "edit@1.5"
         },
         {
           "command": "terminalSessions.deleteNote",

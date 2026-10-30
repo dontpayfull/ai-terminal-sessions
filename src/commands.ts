@@ -438,6 +438,13 @@ export function registerCommands(
     vscode.commands.registerCommand(COMMAND.disableTabState, () => cmdSetTabStateOption('tabStateText', 'off')),
     vscode.commands.registerCommand(COMMAND.enableSidebarDetails, () => cmdSetTabStateOption('claudeSidebarDetails', 'auto')),
     vscode.commands.registerCommand(COMMAND.disableSidebarDetails, () => cmdSetTabStateOption('claudeSidebarDetails', 'off')),
+    vscode.commands.registerCommand(COMMAND.enableFollowTitle, () => cmdSetTabStateOption('followConversationTitle', true)),
+    vscode.commands.registerCommand(COMMAND.disableFollowTitle, () => cmdSetTabStateOption('followConversationTitle', false)),
+    vscode.commands.registerCommand(COMMAND.followTitleAgain, (item?: SessionTreeItem) => {
+      if (!(item instanceof SessionTreeItem)) return;
+      index.setSessionTitlePinned(item.session.workspaceHash, item.session.name, false);
+      refreshSidebar();
+    }),
     vscode.commands.registerCommand(COMMAND.pickTabStateClear, () => cmdPickTabStateClear()),
     vscode.commands.registerCommand(COMMAND.restoreKilled, (item?: KilledSessionItem) => cmdRestoreKilled(index, registry, claudeTracker, item)),
   );
@@ -4242,13 +4249,14 @@ export async function syncSpecialFolderContexts(): Promise<void> {
   await vscode.commands.executeCommand('setContext', 'terminalSessions.tabStateEnabled', cfg.tabStateText === 'on');
   // Agent details nested under the session rows: on unless the mode is 'off'.
   await vscode.commands.executeCommand('setContext', 'terminalSessions.sidebarDetailsEnabled', cfg.claudeSidebarDetails !== 'off');
+  await vscode.commands.executeCommand('setContext', 'terminalSessions.followTitleEnabled', cfg.followConversationTitle);
 }
 
 /** Same scope rule as the folder toggles: write where the value is defined.
  *  Also serves the sidebar details toggle, which writes the same way. */
 async function cmdSetTabStateOption(
-  key: 'tabStateText' | 'tabStateClear' | 'tabStateClearMinutes' | 'claudeSidebarDetails',
-  value: string | number,
+  key: 'tabStateText' | 'tabStateClear' | 'tabStateClearMinutes' | 'claudeSidebarDetails' | 'followConversationTitle',
+  value: string | number | boolean,
 ): Promise<void> {
   const c = vscode.workspace.getConfiguration('terminalSessions');
   const insp = c.inspect(key);
@@ -4405,6 +4413,11 @@ export function wireRenameFlow(
 ): vscode.Disposable {
   renameTracker = tracker;
   const sub = tracker.onDidRenameByUser(e => {
+    // A name typed on the tab while following keeps the session on it.
+    if (getConfig().followConversationTitle) {
+      index.setSessionTitlePinned(e.workspaceHash, e.sessionName, true);
+      index.setSessionFollowedTabName(e.workspaceHash, e.sessionName, undefined);
+    }
     refreshSidebar();
     void offerConversationRename(index, registry, claudeTracker, e.workspaceHash, e.sessionName, e.label);
   });
@@ -4456,6 +4469,10 @@ async function cmdRename(
   // Any conversation question still open for an older name is now stale.
   const gen = bumpRenameGeneration(tmuxName);
   index.setSessionLabel(hash, tmuxName, label);
+  // Following conversation titles: a name you give keeps the session on it;
+  // clearing the name goes back to following.
+  if (getConfig().followConversationTitle) index.setSessionTitlePinned(hash, tmuxName, label !== '');
+  index.setSessionFollowedTabName(hash, tmuxName, undefined);
   refreshSidebar();
   const tab = renameTracker?.terminalFor(tmuxName) ?? findTerminalForSession(tmuxName);
   if (tab) {

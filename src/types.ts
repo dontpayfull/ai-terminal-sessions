@@ -139,6 +139,12 @@ export interface SessionLabel {
   // reload that still shows exactly this was not renamed while nobody watched,
   // so a newer sidebar label must not be replaced by it.
   tabName?: string;
+  // Follow Conversation Title: the user named this session (Rename) while
+  // following was on, so it keeps that name instead of the conversation's.
+  titlePinned?: boolean;
+  // The tab title the follower last gave the open tab, so turning following
+  // off (even after a reload) puts back exactly the tabs it renamed.
+  followedTabName?: string;
   icon?: string;
   color?: string;
   createdAt: string;

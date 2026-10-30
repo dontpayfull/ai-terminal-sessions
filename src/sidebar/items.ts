@@ -269,8 +269,11 @@ export class SessionTreeItem extends vscode.TreeItem {
     // True when this session carries a note; prefixes the label with ✎ so you
     // can spot it without expanding anything.
     public readonly hasNote = false,
+    // Follow Conversation Title: the conversation's title, shown instead of
+    // the session's own name (which stays in the tooltip).
+    public readonly followedTitle?: string,
   ) {
-    const baseLabel = session.label || `#${session.tabId}`;
+    const baseLabel = followedTitle || session.label || `#${session.tabId}`;
     const label = hasNote ? `${NOTE_MARK} ${baseLabel}` : baseLabel;
     const hasActiveClaude =
       claude !== undefined && claude.state !== 'none';
@@ -457,9 +460,10 @@ export class SessionTreeItem extends vscode.TreeItem {
       colorId ? new vscode.ThemeColor(colorId) : undefined,
     );
 
-    const displayHeader = session.label || `Session #${session.tabId}`;
+    const displayHeader = followedTitle || session.label || `Session #${session.tabId}`;
     const parts = [
       `**${displayHeader}**${customized ? '  _(customized)_' : ''}`,
+      ...(followedTitle ? [`Conversation title. Session name: ${session.label || `#${session.tabId}`}`] : []),
       `ID: \`${session.name}\``,
       `Workspace: \`${session.workspacePath || session.workspaceLabel}\``,
     ];

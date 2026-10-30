@@ -4,6 +4,12 @@ All notable changes to the Terminal Sessions extension.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project uses semantic versioning once past 1.0.0.
 
+## [Unreleased]
+
+### Added
+
+- **Follow Conversation Title** (experimental, off by default; Enable/Disable in the sidebar's ⋯ menu, setting `terminalSessions.followConversationTitle`). Each running session's row and terminal tab show the title of the conversation in it: the agent's generated title or its own `/rename`, for Claude, Codex, Grok, Antigravity and OpenCode, subagents left out. The row follows a couple of seconds after the title settles; the session's own name stays in the tooltip and in the alphabetical sort. VS Code renames only the active tab, so a tab takes its title when it is active, when you switch to it, when Re-attach or Restart All recreate it, or (macOS) after a minute with the window unfocused and no key or mouse input, in one walk that gives the previous tab and editor back. Rename keeps your name for that session; an empty name or **Follow Conversation Title Again** goes back to following. The tmux session is never renamed. Suggested in [issue #5](https://github.com/dontpayfull/ai-terminal-sessions/issues/5).
+
 ## [0.40.0] — 2026-10-29
 
 ### Added

@@ -279,6 +279,13 @@ export async function resolveTmuxNameForTerminalLive(
 /** In front of a parked session's tab name. */
 export const PARKED_PREFIX = '\u23f8 ';
 
+/** Follow Conversation Title: the title a session's tab opens with, if any
+ *  (lives in title-follow.ts). */
+let followedTitle: ((sessionName: string) => string | undefined) | undefined;
+export function setFollowedTitleSource(fn: ((sessionName: string) => string | undefined) | undefined): void {
+  followedTitle = fn;
+}
+
 /** Renames an open tab (lives in commands.ts, next to the rename tracker). */
 let retitler: ((tab: vscode.Terminal, name: string) => Promise<void>) | undefined;
 export function setTabRetitler(fn: (tab: vscode.Terminal, name: string) => Promise<void>): void {
@@ -398,7 +405,10 @@ export async function openTerminalForSession(
     if (parsed) {
       meta = index.getSessionMeta(parsed.hash, name);
       const ws = index.getWorkspace(parsed.hash);
-      termName = (parkedTitle ? PARKED_PREFIX : '') + displayName(meta?.label, ws?.label || parsed.hash, parsed.tabId);
+      const followed = followedTitle?.(name);
+      termName = (parkedTitle ? PARKED_PREFIX : '') + displayName(followed ?? meta?.label, ws?.label || parsed.hash, parsed.tabId);
+      // Remembered, so turning following off gives this tab its own name back.
+      index.setSessionFollowedTabName(parsed.hash, name, followed ? termName : undefined);
       if (!resolvedCwd) resolvedCwd = meta?.folderPath || ws?.path;
     }
   }

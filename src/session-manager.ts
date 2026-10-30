@@ -367,6 +367,27 @@ export class SessionIndex {
     return names.length ? names : undefined;
   }
 
+  /** Follow Conversation Title: keep the session's own name (pinned) or not. */
+  setSessionTitlePinned(hash: string, sessionName: string, pinned: boolean): void {
+    this.reloadIfChanged();
+    const ws = this.data.workspaces[hash];
+    if (!ws?.sessions[sessionName]) return;
+    if (pinned) ws.sessions[sessionName].titlePinned = true;
+    else delete ws.sessions[sessionName].titlePinned;
+    this.save();
+  }
+
+  /** The tab title the follower gave the open tab; undefined clears it. */
+  setSessionFollowedTabName(hash: string, sessionName: string, name: string | undefined): void {
+    this.reloadIfChanged();
+    const ws = this.data.workspaces[hash];
+    if (!ws?.sessions[sessionName]) return;
+    if (ws.sessions[sessionName].followedTabName === name) return;
+    if (name) ws.sessions[sessionName].followedTabName = name;
+    else delete ws.sessions[sessionName].followedTabName;
+    this.save();
+  }
+
   setSessionLocked(hash: string, sessionName: string, locked: boolean): void {
     this.reloadIfChanged();
     const ws = this.data.workspaces[hash];
