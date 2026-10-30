@@ -3,7 +3,7 @@ import * as assert from 'node:assert/strict';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { cleanTitle, scanTitles, TitleCache } from '../src/title-follow';
+import { cleanTitle, isTitlePinned, scanTitles, TitleCache } from '../src/title-follow';
 
 const line = (o: object): string => JSON.stringify(o) + '\n';
 
@@ -45,6 +45,20 @@ test('cleanTitle flattens, strips control characters and caps the length', () =>
   const long = cleanTitle('x'.repeat(100))!;
   assert.equal(long.length, 60);
   assert.ok(long.endsWith('…'));
+});
+
+test('a named session keeps its name, an unnamed one follows', () => {
+  const folderPath = '/work/api';
+  assert.equal(isTitlePinned(undefined, 'ws'), false);
+  assert.equal(isTitlePinned({ folderPath }, 'ws'), false);
+  assert.equal(isTitlePinned({ label: '  ', folderPath }, 'ws'), false);
+  // The workspace or folder name is the default, not a name the user gave.
+  assert.equal(isTitlePinned({ label: 'ws', folderPath }, 'ws'), false);
+  assert.equal(isTitlePinned({ label: 'api', folderPath }, 'ws'), false);
+  assert.equal(isTitlePinned({ label: 'ws - MCP servers', folderPath }, 'ws'), true);
+  // Follow Again on a named session, and a pin kept by an older version.
+  assert.equal(isTitlePinned({ label: 'ws - MCP servers', titlePinned: false, folderPath }, 'ws'), false);
+  assert.equal(isTitlePinned({ label: 'ws', titlePinned: true, folderPath }, 'ws'), true);
 });
 
 test('OpenCode: the newest root session title wins, a subagent\'s never does', async () => {

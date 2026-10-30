@@ -4,6 +4,12 @@ All notable changes to the Terminal Sessions extension.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project uses semantic versioning once past 1.0.0.
 
+## [Unreleased]
+
+### Changed
+
+- **Follow Conversation Title** follows only the sessions you have not named. A session you named, before or after enabling it, keeps its name; **Follow Conversation Title Again** on its row follows it anyway, until you rename it again.
+
 ## [0.41.0] — 2026-10-30
 
 ### Added

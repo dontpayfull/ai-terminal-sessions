@@ -367,13 +367,14 @@ export class SessionIndex {
     return names.length ? names : undefined;
   }
 
-  /** Follow Conversation Title: keep the session's own name (pinned) or not. */
-  setSessionTitlePinned(hash: string, sessionName: string, pinned: boolean): void {
+  /** Follow Conversation Title: keep the session's own name (true), follow
+   *  anyway (false), or decide by whether it has a name (undefined). */
+  setSessionTitlePinned(hash: string, sessionName: string, pinned: boolean | undefined): void {
     this.reloadIfChanged();
     const ws = this.data.workspaces[hash];
     if (!ws?.sessions[sessionName]) return;
-    if (pinned) ws.sessions[sessionName].titlePinned = true;
-    else delete ws.sessions[sessionName].titlePinned;
+    if (pinned === undefined) delete ws.sessions[sessionName].titlePinned;
+    else ws.sessions[sessionName].titlePinned = pinned;
     this.save();
   }
 

@@ -4408,11 +4408,9 @@ export function wireRenameFlow(
 ): vscode.Disposable {
   renameTracker = tracker;
   const sub = tracker.onDidRenameByUser(e => {
-    // A name typed on the tab while following keeps the session on it.
-    if (getConfig().followConversationTitle) {
-      index.setSessionTitlePinned(e.workspaceHash, e.sessionName, true);
-      index.setSessionFollowedTabName(e.workspaceHash, e.sessionName, undefined);
-    }
+    // A name typed on the tab: the session keeps it, even after Follow Again.
+    index.setSessionTitlePinned(e.workspaceHash, e.sessionName, undefined);
+    if (getConfig().followConversationTitle) index.setSessionFollowedTabName(e.workspaceHash, e.sessionName, undefined);
     refreshSidebar();
     void offerConversationRename(index, registry, claudeTracker, e.workspaceHash, e.sessionName, e.label);
   });
@@ -4464,9 +4462,9 @@ async function cmdRename(
   // Any conversation question still open for an older name is now stale.
   const gen = bumpRenameGeneration(tmuxName);
   index.setSessionLabel(hash, tmuxName, label);
-  // Following conversation titles: a name you give keeps the session on it;
-  // clearing the name goes back to following.
-  if (getConfig().followConversationTitle) index.setSessionTitlePinned(hash, tmuxName, label !== '');
+  // Following conversation titles: a name you give keeps the session on it
+  // (even after Follow Again); clearing the name goes back to following.
+  index.setSessionTitlePinned(hash, tmuxName, undefined);
   refreshSidebar();
   const tab = renameTracker?.terminalFor(tmuxName) ?? findTerminalForSession(tmuxName);
   // An empty name while following: the tab goes back to the conversation's title.

@@ -12,6 +12,7 @@ import { isDefaultOpencodeTitle } from './agents/opencode/transcript';
 import { PARKED_PREFIX } from './profile-provider';
 import { isWalkingTabs, runTabWalk } from './tab-order';
 import type { TerminalTracker } from './terminal-tracker';
+import type { SessionLabel } from './types';
 
 // Follow Conversation Title (opt-in): a session shows the title of the
 // conversation running in it, the one the agent generated or the one set with
@@ -27,7 +28,21 @@ import type { TerminalTracker } from './terminal-tracker';
 //     the previous tab and editor back and stops the moment the window is
 //     focused again;
 //   - Re-attach / Restart All, and any reopen, name the new tab from the start.
-// A name you give the session (Rename) while following is on pins it.
+// A session you named keeps its name; only unnamed ones follow, unless you
+// choose Follow Conversation Title Again on a named one.
+
+/** A named session keeps its name, unless the user chose to follow it anyway
+ *  (titlePinned false). A label equal to the workspace or folder name is the
+ *  extension's default, not a name. */
+export function isTitlePinned(
+  meta: Pick<SessionLabel, 'label' | 'folderPath' | 'titlePinned'> | undefined,
+  wsLabel: string | undefined,
+): boolean {
+  if (meta?.titlePinned !== undefined) return meta.titlePinned;
+  const label = meta?.label?.trim();
+  if (!label) return false;
+  return label !== wsLabel?.trim() && label !== meta?.folderPath?.split('/').pop();
+}
 
 /** A title must hold this long before a tab takes it (titles get revised). */
 const SETTLE_MS = 2000;
@@ -190,8 +205,13 @@ export class TitleFollower implements vscode.Disposable {
   titleFor(sessionName: string): string | undefined {
     if (!this.enabled()) return undefined;
     const parsed = parseSessionName(sessionName, getConfig().sessionPrefix);
-    if (parsed && this.index.getSessionMeta(parsed.hash, sessionName)?.titlePinned) return undefined;
+    if (parsed && this.isPinned(parsed.hash, sessionName)) return undefined;
     return this.shown.get(sessionName);
+  }
+
+  /** Whether the session keeps its own name instead of the conversation's. */
+  isPinned(hash: string, sessionName: string): boolean {
+    return isTitlePinned(this.index.getSessionMeta(hash, sessionName), this.index.getWorkspace(hash)?.label);
   }
 
   /** The tab title the session should have now. */
@@ -207,8 +227,8 @@ export class TitleFollower implements vscode.Disposable {
     return (meta?.parked ? PARKED_PREFIX : '') + base;
   }
 
-  /** Stop following this session's conversation (a Rename), or follow again. */
-  setPinned(hash: string, sessionName: string, pinned: boolean): void {
+  /** Follow this session's conversation even though it has a name (false). */
+  setPinned(hash: string, sessionName: string, pinned: boolean | undefined): void {
     this.index.setSessionTitlePinned(hash, sessionName, pinned);
     this.refresh();
     void this.applyActive();

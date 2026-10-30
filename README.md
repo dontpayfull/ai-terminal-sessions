@@ -446,10 +446,10 @@ then; it asks in a box at the top of the window.
 ### Follow Conversation Title (experimental)
 
 **Enable Follow Conversation Title** in the view's `⋯` menu (off by
-default) names each running session after the conversation in it: the
-title the agent generated, or one set with its own `/rename`. Claude,
-Codex, Grok, Antigravity and OpenCode are covered; subagents are not
-followed.
+default) names each running session you have not named after the
+conversation in it: the title the agent generated, or one set with its
+own `/rename`. Claude, Codex, Grok, Antigravity and OpenCode are
+covered; subagents are not followed.
 
 - The sidebar row takes a new title a couple of seconds after it
   settles. The session's own name stays in the row's tooltip, and the
@@ -460,9 +460,9 @@ followed.
   recreate it, or (macOS) when the window has had no focus and no key
   or mouse input for a minute: then the waiting tabs are renamed in one
   go and the tab and editor you had are given back.
-- **Rename…** while following keeps your name for that session. An
-  empty name, or **Follow Conversation Title Again** on the row, goes
-  back to following.
+- A session you named (**Rename…**, before or after enabling) keeps
+  its name. **Follow Conversation Title Again** on its row follows it
+  anyway, until you rename it again; an empty name follows it too.
 - The tmux session is never renamed. **Disable** gives every tab it
   renamed its own name back as you open it.
 

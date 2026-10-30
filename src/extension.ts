@@ -127,8 +127,7 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
     dispose: () => { setSidebarTitleSource(undefined); setFollowedTitleSource(undefined); },
   }, vscode.commands.registerCommand(COMMAND.followTitleAgain, (item?: SessionTreeItem) => {
     if (!(item instanceof SessionTreeItem)) return;
-    const meta = index.getSessionMeta(item.session.workspaceHash, item.session.name);
-    if (!meta?.titlePinned) {
+    if (!titles.isPinned(item.session.workspaceHash, item.session.name)) {
       vscode.window.setStatusBarMessage('This session already follows its conversation title', 3000);
       return;
     }
