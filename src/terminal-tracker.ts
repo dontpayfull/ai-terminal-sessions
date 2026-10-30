@@ -74,6 +74,16 @@ export class TerminalTracker implements vscode.Disposable {
     return undefined;
   }
 
+  /** The session a tab belongs to, as identified from its own process. */
+  sessionFor(terminal: vscode.Terminal): string | undefined {
+    return this.tracked.get(terminal)?.sessionName;
+  }
+
+  /** Identified and watched: a title the extension gives it is recognised. */
+  isTracked(terminal: vscode.Terminal): boolean {
+    return this.tracked.has(terminal);
+  }
+
   /** The extension is about to give this tab `name` itself: not a user rename. */
   expectName(terminal: vscode.Terminal, name: string): void {
     const info = this.tracked.get(terminal);
@@ -130,8 +140,10 @@ export class TerminalTracker implements vscode.Disposable {
     if (!tabName || tabName === 'tmux') return;
     const meta = this.index.getSessionMeta(hash, sessionName);
     // Still the title it had when last open: the label may have been renamed
-    // since (in the sidebar), and that newer name stays.
+    // since (in the sidebar), and that newer name stays. A conversation title
+    // Follow Conversation Title gave it is not the user's either.
     if (meta?.tabName && tabName === meta.tabName.trim()) return;
+    if (meta?.followedTabName && tabName === meta.followedTabName.trim()) return;
     const wsLabel = this.index.getWorkspace(hash)?.label;
     const extracted = this.extractLabel(tabName, tabId);
     if (!extracted) return;
@@ -171,6 +183,13 @@ export class TerminalTracker implements vscode.Disposable {
         }
       }
       if (term.name === info.lastSeenName) continue;
+      // A conversation title Follow Conversation Title gave the tab, seen after
+      // its expectation ran out: still the extension's, not a rename.
+      if (term.name === this.index.getSessionMeta(info.workspaceHash, info.sessionName)?.followedTabName) {
+        info.lastSeenName = term.name;
+        this.index.setSessionTabName(info.workspaceHash, info.sessionName, term.name);
+        continue;
+      }
       const parsed = parseSessionName(info.sessionName, cfg.sessionPrefix);
       const newLabel = this.extractLabel(term.name, parsed?.tabId);
       info.lastSeenName = term.name;

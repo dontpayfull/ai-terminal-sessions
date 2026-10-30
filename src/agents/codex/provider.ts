@@ -249,6 +249,12 @@ export const codexProvider: AgentProvider = {
     return out;
   },
 
+  readTitles(transcriptPath: string) {
+    const id = sessionIdFromRolloutName(path.basename(transcriptPath));
+    const autoTitle = id ? threadNamesById().get(id) : undefined;
+    return autoTitle ? { autoTitle } : undefined;
+  },
+
   readTranscriptSummary(transcriptPath: string) {
     const s = readCodexTranscriptSummary(transcriptPath);
     if (!s) return undefined;

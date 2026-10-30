@@ -62,8 +62,15 @@ function agyTitlesById(): Map<string, AgyTitles> {
   const map = new Map<string, AgyTitles>();
   try {
     if (fs.existsSync(SUMMARIES_DB)) {
+      // A WAL-mode db opened read-only needs its -wal/-shm files, which exist
+      // only while agy has the db open: with no agy running, `-readonly` fails
+      // to open it at all. Then there is nothing in a WAL to miss, and the
+      // immutable URI reads the file as it stands.
+      const target = fs.existsSync(`${SUMMARIES_DB}-wal`)
+        ? SUMMARIES_DB
+        : `file:${encodeURI(SUMMARIES_DB)}?immutable=1`;
       const out = execFileSync('sqlite3', [
-        '-readonly', '-json', SUMMARIES_DB,
+        '-readonly', '-json', target,
         "select conversation_id as id, title, preview from conversation_summaries where title <> '' or preview <> ''",
       ], { encoding: 'utf8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'] });
       const rows = out.trim() ? JSON.parse(out) as { id?: unknown; title?: unknown; preview?: unknown }[] : [];
@@ -344,6 +351,12 @@ export const agyProvider: AgentProvider = {
 
     out.sort((a, b) => (b.mtimeMs ?? 0) - (a.mtimeMs ?? 0));
     return out;
+  },
+
+  readTitles(transcriptPath: string) {
+    const convId = /([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})/.exec(transcriptPath)?.[1];
+    const t = convId ? agyTitlesById().get(convId) : undefined;
+    return t ? { customTitle: t.custom, autoTitle: t.auto } : undefined;
   },
 
   readTranscriptSummary(transcriptPath: string) {

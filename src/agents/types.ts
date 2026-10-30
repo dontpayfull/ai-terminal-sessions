@@ -188,6 +188,10 @@ export interface AgentProvider {
    *  (cwd-subset filter, size tie-break, preview). Optional — when absent,
    *  callers fall back to `fs.stat` for byteSize/mtimeMs and skip the cwd
    *  filter for that agent. */
+  /** Just the conversation's titles, from wherever the agent keeps them,
+   *  without reading the transcript body: Follow Conversation Title polls
+   *  it. Falls back to readTranscriptSummary when absent. */
+  readTitles?(transcriptPath: string): { customTitle?: string; autoTitle?: string } | undefined;
   readTranscriptSummary?(transcriptPath: string): {
     cwd?: string;
     firstUserMessage?: string;

@@ -285,6 +285,9 @@ let followedTitle: ((sessionName: string) => string | undefined) | undefined;
 export function setFollowedTitleSource(fn: ((sessionName: string) => string | undefined) | undefined): void {
   followedTitle = fn;
 }
+export function followedTitleFor(sessionName: string): string | undefined {
+  return followedTitle?.(sessionName);
+}
 
 /** Renames an open tab (lives in commands.ts, next to the rename tracker). */
 let retitler: ((tab: vscode.Terminal, name: string) => Promise<void>) | undefined;

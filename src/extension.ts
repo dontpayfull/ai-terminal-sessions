@@ -15,7 +15,8 @@ import { AgentRegistry } from './agents/registry';
 import { ClaudeSearchIndex } from './claude-search';
 import { resolveTmuxNameForTerminalLive, openTerminalForSession, setFollowedTitleSource } from './profile-provider';
 import { parseSessionName } from './workspace-id';
-import { getConfig } from './config';
+import { getConfig, COMMAND } from './config';
+import { SessionTreeItem } from './sidebar/items';
 import { registerRevealPath } from './reveal-path';
 import { registerTerminalLinks } from './terminal-links';
 import { registerClipboardBridge } from './clipboard-bridge';
@@ -124,7 +125,15 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   setFollowedTitleSource(n => titles.titleFor(n));
   ctx.subscriptions.push(titles, {
     dispose: () => { setSidebarTitleSource(undefined); setFollowedTitleSource(undefined); },
-  });
+  }, vscode.commands.registerCommand(COMMAND.followTitleAgain, (item?: SessionTreeItem) => {
+    if (!(item instanceof SessionTreeItem)) return;
+    const meta = index.getSessionMeta(item.session.workspaceHash, item.session.name);
+    if (!meta?.titlePinned) {
+      vscode.window.setStatusBarMessage('This session already follows its conversation title', 3000);
+      return;
+    }
+    titles.setPinned(item.session.workspaceHash, item.session.name, false);
+  }));
 
   // Monotonic token for the async active-terminal resolution below: a slow
   // PID walk for a tab you already left must not clobber the newer result

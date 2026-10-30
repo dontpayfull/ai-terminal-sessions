@@ -8,7 +8,8 @@ import { getConfig } from './config';
 import { parseSessionName } from './workspace-id';
 import { conversationTitle } from './conversation-title';
 import { readClaudeCustomTitle } from './claude-transcript';
-import { findTerminalForSession, PARKED_PREFIX } from './profile-provider';
+import { isDefaultOpencodeTitle } from './agents/opencode/transcript';
+import { PARKED_PREFIX } from './profile-provider';
 import { isWalkingTabs, runTabWalk } from './tab-order';
 import type { TerminalTracker } from './terminal-tracker';
 
@@ -36,7 +37,6 @@ const AWAY_MS = 60_000;
 /** A non-Claude transcript is re-read at most this often. */
 const OTHER_READ_MS = 15_000;
 const MAX_TITLE = 60;
-const TITLE_MARKS = ['"ai-title"', '"custom-title"'];
 const CHUNK = 4 * 1024 * 1024;
 
 export interface TitleCache {
@@ -44,10 +44,16 @@ export interface TitleCache {
   mtimeMs: number;
   /** Claude: bytes scanned, up to the last complete line. */
   offset: number;
+  /** The title set inside the agent (/rename), as the agent last wrote it. */
   custom?: string;
   auto?: string;
   readAt: number;
   reading?: boolean;
+  /** Claude: the custom title from the transcript records, kept apart from
+   *  the sidecar file so neither hides a newer value of the other. */
+  recordCustom?: string;
+  /** A custom-title record was seen, an empty one (a cleared /rename) too. */
+  recordSeen?: boolean;
 }
 
 /** Seconds since the last keyboard or mouse input, macOS only. */
@@ -68,43 +74,76 @@ export function cleanTitle(v: string | undefined): string | undefined {
   return t.length > MAX_TITLE ? `${t.slice(0, MAX_TITLE - 1).trimEnd()}…` : t;
 }
 
-/** Claude appends `ai-title` / `custom-title` records: only the new bytes are
- *  read, and only lines carrying one of them are parsed. */
-export async function scanClaudeTitles(tp: string, c: TitleCache, st: fs.Stats): Promise<void> {
+/** Agents whose transcript carries the title as appended records, read
+ *  incrementally: the marker a title line contains, and what it sets. */
+const TITLE_RECORDS: Record<string, { marks: string[]; take: (r: Record<string, unknown>, c: TitleCache) => void }> = {
+  // Claude: `ai-title`, and `custom-title` from /rename ('' clears it).
+  claude: {
+    marks: ['"ai-title"', '"custom-title"'],
+    take: (r, c) => {
+      if (r.type === 'custom-title' && typeof r.customTitle === 'string') {
+        c.recordSeen = true;
+        c.recordCustom = r.customTitle || undefined;
+      }
+      else if (r.type === 'ai-title' && typeof r.aiTitle === 'string') c.auto = r.aiTitle;
+    },
+  },
+  // OpenCode (our plugin's JSONL): a `session` line each time the title
+  // changes. Child sessions (subagents) write into the root's file too, so
+  // only a line without a parent counts.
+  opencode: {
+    marks: ['"type":"session"'],
+    take: (r, c) => {
+      if (r.type !== 'session' || r.parentID) return;
+      if (typeof r.title === 'string' && !isDefaultOpencodeTitle(r.title)) c.auto = r.title;
+    },
+  },
+};
+
+/** Read the bytes appended since the last scan and pick the title records
+ *  out of them; only lines carrying a marker are parsed. Works on raw bytes,
+ *  cut only at newlines, so a character split by a chunk end is never
+ *  decoded in halves and the offset stays exact. */
+export async function scanTitles(tp: string, c: TitleCache, st: fs.Stats, agent: string): Promise<void> {
+  const rec = TITLE_RECORDS[agent];
+  if (!rec) return;
+  const marks = rec.marks.map(m => Buffer.from(m));
   c.reading = true;
   try {
     // Rewritten or truncated: start over.
-    if (st.size < c.offset) { c.offset = 0; c.custom = undefined; c.auto = undefined; }
+    if (st.size < c.offset) { c.offset = 0; c.custom = undefined; c.recordCustom = undefined; c.recordSeen = undefined; c.auto = undefined; }
     const fh = await fs.promises.open(tp, 'r');
     try {
-      // In chunks, so a long transcript read for the first time is never
-      // held whole; a line cut by a chunk end is carried to the next.
-      let carry = '';
+      let carry: Buffer = Buffer.alloc(0);
       let at = c.offset;
       while (at < st.size) {
-        const buf = Buffer.alloc(Math.min(CHUNK, st.size - at));
+        const chunk = Buffer.allocUnsafe(Math.min(CHUNK, st.size - at));
         // eslint-disable-next-line no-await-in-loop
-        const { bytesRead } = await fh.read(buf, 0, buf.length, at);
+        const { bytesRead } = await fh.read(chunk, 0, chunk.length, at);
         if (bytesRead === 0) break;
         at += bytesRead;
-        const text = carry + buf.subarray(0, bytesRead).toString('utf8');
-        const end = text.lastIndexOf('\n');
-        if (end < 0) { carry = text; continue; }
-        for (const line of text.slice(0, end).split('\n')) {
-          if (!TITLE_MARKS.some(m => line.includes(m))) continue;
-          try {
-            const r = JSON.parse(line);
-            if (r?.type === 'custom-title' && typeof r.customTitle === 'string') c.custom = r.customTitle || undefined;
-            else if (r?.type === 'ai-title' && typeof r.aiTitle === 'string') c.auto = r.aiTitle;
-          } catch { /* not a whole record */ }
+        const buf = carry.length ? Buffer.concat([carry, chunk.subarray(0, bytesRead)]) : chunk.subarray(0, bytesRead);
+        const end = buf.lastIndexOf(0x0a);
+        if (end < 0) { carry = Buffer.from(buf); continue; }
+        const whole = buf.subarray(0, end);
+        // Most chunks carry no title at all: skip them without splitting.
+        if (marks.some(m => whole.includes(m))) {
+          for (const line of whole.toString('utf8').split('\n')) {
+            if (!rec.marks.some(m => line.includes(m))) continue;
+            try {
+              const r = JSON.parse(line);
+              if (r && typeof r === 'object') rec.take(r, c);
+            } catch { /* not a whole record */ }
+          }
         }
-        carry = text.slice(end + 1);
+        carry = Buffer.from(buf.subarray(end + 1));
       }
       // Up to the last complete line: a half-written one is read next time.
-      c.offset = at - Buffer.byteLength(carry, 'utf8');
+      c.offset = at - carry.length;
     } finally { await fh.close(); }
-    // A /rename can also live in the sidecar file.
-    c.custom = readClaudeCustomTitle(tp) ?? c.custom;
+    // A Claude /rename lives in the records; the sidecar (written by Rename
+    // from the extension, next to a record) only stands in when none is there.
+    if (agent === 'claude') c.custom = c.recordSeen ? c.recordCustom : readClaudeCustomTitle(tp);
     c.size = st.size;
     c.mtimeMs = st.mtimeMs;
   } catch { /* gone or unreadable: next change tries again */ }
@@ -116,8 +155,13 @@ export class TitleFollower implements vscode.Disposable {
   /** Per tmux session: the title being shown, and one still settling. */
   private readonly shown = new Map<string, string>();
   private readonly settling = new Map<string, { title: string; since: number }>();
+  /** Per tmux session: the conversation the shown title belongs to. */
+  private readonly conversation = new Map<string, string>();
   private timer: NodeJS.Timeout | undefined;
   private walking = false;
+  private ticking = false;
+  /** No `ioreg` before this: the last answer said you were around. */
+  private nextAwayCheck = 0;
   private readonly disposables: vscode.Disposable[] = [];
 
   constructor(
@@ -177,21 +221,31 @@ export class TitleFollower implements vscode.Disposable {
 
   private restart(): void {
     if (this.timer) clearInterval(this.timer);
-    this.timer = undefined;
-    if (this.enabled()) {
-      this.timer = setInterval(() => void this.tick(), TICK_MS);
-      void this.tick();
-    } else {
+    if (!this.enabled()) {
       this.shown.clear();
       this.settling.clear();
+      this.conversation.clear();
       this.refresh();
-      // Put back the tab names it gave, as tabs come to the front.
-      void this.applyActive();
     }
+    // Off, it still runs until every tab it renamed has its own name back
+    // (as tabs come to the front, or in a walk while you are away).
+    this.timer = setInterval(() => void this.tick(), TICK_MS);
+    void this.tick();
   }
 
   private async tick(): Promise<void> {
-    if (!this.enabled()) return;
+    if (this.ticking) return;
+    this.ticking = true;
+    try { await this.step(); } finally { this.ticking = false; }
+  }
+
+  private async step(): Promise<void> {
+    if (!this.enabled()) {
+      await this.applyActive();
+      await this.maybeWalkAway();
+      if (this.pendingTabs().length === 0 && this.timer) { clearInterval(this.timer); this.timer = undefined; }
+      return;
+    }
     const now = Date.now();
     let changed = false;
     const live = new Set<string>();
@@ -199,8 +253,21 @@ export class TitleFollower implements vscode.Disposable {
       for (const [name, meta] of Object.entries(ws.sessions ?? {})) {
         if (meta.stopped) continue;
         live.add(name);
-        const title = this.currentTitle(name);
-        if (!title) continue;
+        // Another conversation in the same session (/clear, a resume): the
+        // old title goes at once, the session's own name until a new one.
+        const conv = this.conversationOf(name);
+        if (conv !== this.conversation.get(name)) {
+          if (conv === undefined) this.conversation.delete(name); else this.conversation.set(name, conv);
+          this.settling.delete(name);
+          if (this.shown.delete(name)) changed = true;
+        }
+        const title = await this.currentTitle(name);
+        // No title (yet, or the agent has gone): the session's own name.
+        if (!title) {
+          this.settling.delete(name);
+          if (this.shown.delete(name)) changed = true;
+          continue;
+        }
         if (this.shown.get(name) === title) { this.settling.delete(name); continue; }
         const s = this.settling.get(name);
         if (!s || s.title !== title) { this.settling.set(name, { title, since: now }); continue; }
@@ -211,17 +278,24 @@ export class TitleFollower implements vscode.Disposable {
       }
     }
     for (const name of [...this.shown.keys()]) if (!live.has(name)) { this.shown.delete(name); changed = true; }
+    for (const name of [...this.conversation.keys()]) if (!live.has(name)) this.conversation.delete(name);
     if (changed) this.refresh();
     await this.applyActive();
     await this.maybeWalkAway();
   }
 
+  private conversationOf(sessionName: string): string | undefined {
+    const snap = this.tracker.getSnapshot(sessionName);
+    return snap?.sessionId || snap?.transcriptPath || undefined;
+  }
+
   /** The title of the conversation running in a session, read on change. */
-  private currentTitle(sessionName: string): string | undefined {
+  private async currentTitle(sessionName: string): Promise<string | undefined> {
     const snap = this.tracker.getSnapshot(sessionName);
     const tp = snap?.transcriptPath;
-    if (!snap || !tp) return undefined;
-    const c = this.readTitles(tp, snap.agent ?? 'claude');
+    // 'none': no agent runs in the session (any more).
+    if (!snap || snap.state === 'none' || !tp) return undefined;
+    const c = await this.readTitles(tp, snap.agent ?? 'claude');
     return cleanTitle(conversationTitle(
       { sessionId: snap.sessionId ?? '', customTitle: c?.custom, autoTitle: c?.auto },
       id => (id ? this.index.getSessionName(id) : undefined),
@@ -229,25 +303,30 @@ export class TitleFollower implements vscode.Disposable {
     ).title);
   }
 
-  private readTitles(tp: string, agent: string): TitleCache | undefined {
+  private async readTitles(tp: string, agent: string): Promise<TitleCache | undefined> {
     let st: fs.Stats;
     try { st = fs.statSync(tp); } catch { return this.caches.get(tp); }
     let c = this.caches.get(tp);
-    if (c && c.size === st.size && c.mtimeMs === st.mtimeMs) return c;
     if (!c) { c = { size: 0, mtimeMs: 0, offset: 0, readAt: 0 }; this.caches.set(tp, c); }
-    if (agent === 'claude') {
-      if (!c.reading) void scanClaudeTitles(tp, c, st);
+    if (TITLE_RECORDS[agent]) {
+      if (c.size === st.size && c.mtimeMs === st.mtimeMs) return c;
+      // Awaited, so a new title shows on this tick, not the next one.
+      if (!c.reading) await scanTitles(tp, c, st, agent);
       return c;
     }
-    // Other agents: their own summary reader, not more often than OTHER_READ_MS.
+    // Other agents keep the title beside the transcript (Codex's session
+    // index, Grok's summary, Antigravity's db), so it can change while the
+    // transcript does not: their reader runs every OTHER_READ_MS regardless.
     if (Date.now() - c.readAt < OTHER_READ_MS) return c;
     c.readAt = Date.now();
     c.size = st.size;
     c.mtimeMs = st.mtimeMs;
     try {
-      const s = this.registry.getProvider(agent)?.readTranscriptSummary?.(tp);
-      c.custom = s?.customTitle;
-      c.auto = s?.autoTitle;
+      const p = this.registry.getProvider(agent);
+      const t = p?.readTitles ? p.readTitles(tp) : p?.readTranscriptSummary?.(tp);
+      // A lookup that came back empty (a locked db, a file mid-write) keeps
+      // the titles already shown.
+      if (t?.customTitle || t?.autoTitle) { c.custom = t.customTitle; c.auto = t.autoTitle; }
     } catch { /* keep the last titles */ }
     return c;
   }
@@ -263,7 +342,9 @@ export class TitleFollower implements vscode.Disposable {
     const out: Array<{ term: vscode.Terminal; name: string }> = [];
     for (const [, ws] of Object.entries(this.index.getAllWorkspaces())) {
       for (const sessionName of Object.keys(ws.sessions ?? {})) {
-        const term = findTerminalForSession(sessionName);
+        // The tracker's own match (tmux args or the live process), never a
+        // tab that merely ends in the same `#<id>` in another workspace.
+        const term = this.terminals.terminalFor(sessionName);
         const name = term && this.desiredName(term, sessionName);
         if (term && name) out.push({ term, name });
       }
@@ -292,6 +373,9 @@ export class TitleFollower implements vscode.Disposable {
   /** Rename `term` if it is the active tab and out of date. */
   private async rename(term: vscode.Terminal): Promise<void> {
     if (vscode.window.activeTerminal !== term) return;
+    // Not identified yet (a tab restored by a reload): its new title would be
+    // read as a rename by the user. Next tick.
+    if (!this.terminals.isTracked(term)) return;
     const sessionName = this.sessionOf(term);
     if (!sessionName) return;
     const name = this.desiredName(term, sessionName);
@@ -301,25 +385,33 @@ export class TitleFollower implements vscode.Disposable {
   private async renameActive(term: vscode.Terminal, sessionName: string, name: string): Promise<void> {
     const parsed = parseSessionName(sessionName, getConfig().sessionPrefix);
     if (!parsed) return;
+    // Recorded before the rename lands, so neither the tracker's poll nor a
+    // reload in between can take the new title for one the user typed.
+    // Giving a tab its own name back, the record of the title it carried is
+    // dropped only once the new name shows: a rename that fails or lands late
+    // leaves it, so the next tick tries again and the tracker still knows it.
+    const following = this.titleFor(sessionName) !== undefined;
+    if (following) this.index.setSessionFollowedTabName(parsed.hash, sessionName, name);
     this.terminals.expectName(term, name);
-    await vscode.commands.executeCommand('workbench.action.terminal.renameWithArg', { name });
-    this.index.setSessionFollowedTabName(parsed.hash, sessionName,
-      this.titleFor(sessionName) !== undefined ? name : undefined);
+    try {
+      await vscode.commands.executeCommand('workbench.action.terminal.renameWithArg', { name });
+    } catch { return; }
+    if (term.name !== name) return;
+    this.index.setSessionTabName(parsed.hash, sessionName, name);
+    if (!following) this.index.setSessionFollowedTabName(parsed.hash, sessionName, undefined);
   }
 
   private sessionOf(term: vscode.Terminal): string | undefined {
-    for (const [, ws] of Object.entries(this.index.getAllWorkspaces())) {
-      for (const sessionName of Object.keys(ws.sessions ?? {})) {
-        if (findTerminalForSession(sessionName) === term) return sessionName;
-      }
-    }
-    return undefined;
+    return this.terminals.sessionFor(term);
   }
 
   private async away(): Promise<boolean> {
-    if (vscode.window.state.focused) return false;
+    if (vscode.window.state.focused || Date.now() < this.nextAwayCheck) return false;
     const idle = await systemIdleMs();
-    return idle !== undefined && idle >= AWAY_MS && !vscode.window.state.focused;
+    if (idle === undefined) { this.nextAwayCheck = Date.now() + AWAY_MS; return false; }
+    // Active a moment ago: no point asking again before a minute can pass.
+    if (idle < AWAY_MS) { this.nextAwayCheck = Date.now() + (AWAY_MS - idle); return false; }
+    return !vscode.window.state.focused;
   }
 
   /** While you are away, rename the waiting tabs in one walk. */
@@ -332,6 +424,10 @@ export class TitleFollower implements vscode.Disposable {
       await runTabWalk(async () => {
         const prevTerm = vscode.window.activeTerminal;
         const prevEditor = vscode.window.activeTextEditor;
+        // What the walk itself left showing: only that is put back, never a
+        // tab or file the user opened after coming back mid-walk.
+        let walkedTerm: vscode.Terminal | undefined;
+        let walkedEditor: vscode.TextEditor | undefined;
         try {
           for (const { term } of waiting) {
             // Back at the keyboard: stop before anything else moves.
@@ -339,17 +435,27 @@ export class TitleFollower implements vscode.Disposable {
             if (!(await this.away())) break;
             const sessionName = this.sessionOf(term);
             const name = sessionName && this.desiredName(term, sessionName);
-            if (!sessionName || !name) continue;
+            if (!sessionName || !name || !this.terminals.isTracked(term)) continue;
             term.show(true);
             // eslint-disable-next-line no-await-in-loop
             for (let i = 0; i < 20 && vscode.window.activeTerminal !== term; i++) await new Promise(r => setTimeout(r, 50));
             if (vscode.window.activeTerminal !== term || vscode.window.state.focused) break;
+            walkedTerm = term;
+            walkedEditor = vscode.window.activeTextEditor;
             // eslint-disable-next-line no-await-in-loop
             await this.renameActive(term, sessionName, name);
           }
         } finally {
-          if (prevTerm && !prevTerm.exitStatus && vscode.window.activeTerminal !== prevTerm) prevTerm.show(true);
-          if (prevEditor && vscode.window.activeTextEditor !== prevEditor) {
+          const ours = walkedTerm !== undefined && vscode.window.activeTerminal === walkedTerm;
+          const editorOurs = walkedTerm !== undefined && vscode.window.activeTextEditor === walkedEditor;
+          if (ours && prevTerm && !prevTerm.exitStatus) {
+            prevTerm.show(true);
+            // The walk's guard holds until the tab is really back, or the
+            // switch would be read as the user opening the last walked tab.
+            // eslint-disable-next-line no-await-in-loop
+            for (let i = 0; i < 20 && vscode.window.activeTerminal !== prevTerm; i++) await new Promise(r => setTimeout(r, 50));
+          }
+          if (editorOurs && prevEditor && vscode.window.activeTextEditor !== prevEditor) {
             try {
               await vscode.window.showTextDocument(prevEditor.document, { viewColumn: prevEditor.viewColumn, preserveFocus: true });
             } catch { /* closed meanwhile */ }

@@ -199,6 +199,12 @@ export const grokProvider: AgentProvider = {
     return out;
   },
 
+  readTitles(transcriptPath: string) {
+    // summary.json only; the stream file itself is just stat'ed.
+    const s = readGrokTranscriptSummary(transcriptPath);
+    return s ? { customTitle: s.customTitle, autoTitle: s.autoTitle } : undefined;
+  },
+
   readTranscriptSummary(transcriptPath: string) {
     return readGrokTranscriptSummary(transcriptPath);
   },

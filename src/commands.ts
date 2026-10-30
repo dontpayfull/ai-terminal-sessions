@@ -5,7 +5,7 @@ import * as vscode from 'vscode';
 import { COMMAND, getConfig, setSortMode, setFilterMode, SidebarSortMode, SidebarFilterMode, SORT_MODES, NativeNotifMode, MAX_CLEAR_MINUTES, clampClearMinutes } from './config';
 import * as tmux from './tmux';
 import { SessionIndex, enrichSessions } from './session-manager';
-import { openTerminalForSession, findTerminalForSession, findVerifiedTabForSession, metaIconAndColor, sessionNameForTerminal, resolveTmuxNameForTerminalLive, nextSafeTabId, PARKED_PREFIX, setTabRetitler } from './profile-provider';
+import { openTerminalForSession, findTerminalForSession, findVerifiedTabForSession, metaIconAndColor, sessionNameForTerminal, resolveTmuxNameForTerminalLive, nextSafeTabId, PARKED_PREFIX, setTabRetitler, followedTitleFor } from './profile-provider';
 import { currentWorkspace, hashPath, sessionName as buildSessionName, parseSessionName } from './workspace-id';
 import { SessionTreeItem, SubagentTreeItem, GroupTreeItem, WorkspaceTreeItem, KilledSessionItem, SessionsFolderItem } from './sidebar/items';
 import { refreshSidebar, collapseAllSessions, revealSessionInSidebar, setSidebarTextFilter, getSidebarTextFilter } from './sidebar/tree-provider';
@@ -440,11 +440,6 @@ export function registerCommands(
     vscode.commands.registerCommand(COMMAND.disableSidebarDetails, () => cmdSetTabStateOption('claudeSidebarDetails', 'off')),
     vscode.commands.registerCommand(COMMAND.enableFollowTitle, () => cmdSetTabStateOption('followConversationTitle', true)),
     vscode.commands.registerCommand(COMMAND.disableFollowTitle, () => cmdSetTabStateOption('followConversationTitle', false)),
-    vscode.commands.registerCommand(COMMAND.followTitleAgain, (item?: SessionTreeItem) => {
-      if (!(item instanceof SessionTreeItem)) return;
-      index.setSessionTitlePinned(item.session.workspaceHash, item.session.name, false);
-      refreshSidebar();
-    }),
     vscode.commands.registerCommand(COMMAND.pickTabStateClear, () => cmdPickTabStateClear()),
     vscode.commands.registerCommand(COMMAND.restoreKilled, (item?: KilledSessionItem) => cmdRestoreKilled(index, registry, claudeTracker, item)),
   );
@@ -4472,14 +4467,20 @@ async function cmdRename(
   // Following conversation titles: a name you give keeps the session on it;
   // clearing the name goes back to following.
   if (getConfig().followConversationTitle) index.setSessionTitlePinned(hash, tmuxName, label !== '');
-  index.setSessionFollowedTabName(hash, tmuxName, undefined);
   refreshSidebar();
   const tab = renameTracker?.terminalFor(tmuxName) ?? findTerminalForSession(tmuxName);
+  // An empty name while following: the tab goes back to the conversation's title.
+  const followed = label ? undefined : followedTitleFor(tmuxName);
   if (tab) {
     const wsLabel = index.getWorkspace(hash)?.label ?? item.session.workspaceLabel;
     // A parked tab keeps its ⏸.
     const parkedNow = Boolean(index.getSessionMeta(hash, tmuxName)?.stopped && index.getSessionMeta(hash, tmuxName)?.parked);
-    await retitleTab(tab, (parkedNow ? PARKED_PREFIX : '') + defaultTermName(wsLabel, item.session.tabId, label));
+    const tabName = (parkedNow ? PARKED_PREFIX : '') + defaultTermName(wsLabel, item.session.tabId, followed ?? label);
+    // Recorded first, so the new title is not read as one typed by the user.
+    index.setSessionFollowedTabName(hash, tmuxName, followed ? tabName : undefined);
+    await retitleTab(tab, tabName);
+  } else {
+    index.setSessionFollowedTabName(hash, tmuxName, undefined);
   }
   // A newer rename may have come in while the tab was being retitled.
   if (label) await offerConversationRename(index, registry, claudeTracker, hash, tmuxName, label, gen);
