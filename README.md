@@ -291,10 +291,11 @@ from where you are typing.
 
 ### Separators in the tab list
 
-A long tab list reads better in sections. Pick **Session Separator** from
-the `+ ∨` dropdown (or **Add Session Separator** from a tab's
-right-click menu), type a name (or leave it empty for a plain line),
-pick how it looks and drag the new tab where the section starts.
+A long tab list reads better in sections. Pick **─ Session Separator**
+from the `+ ∨` dropdown, right under the default profile (or **Add
+Session Separator** from a tab's right-click menu), type a name (or
+leave it empty for a plain line), pick how it looks and drag the new
+tab where the section starts.
 
 ```
  my-app #3
@@ -313,9 +314,11 @@ pick how it looks and drag the new tab where the section starts.
   where the name sits (centred, after a short lead, or at the very
   start) and the length (20, 30 or 42 characters). Each list shows the
   separator as it will read, with your last choice highlighted
-- **Session Separator (Last Used)** in the same menus asks only for the
+- **─ Session Separator (Last Used)** in the same menus asks only for the
   name (nothing, when the last was blank) and reuses the look, position
   and length picked last
+- **─ Session Separator (Blank)** in the `+ ∨` dropdown adds a blank row
+  at once, with no questions
 - Every separator but the blank one is blue, the name upper-cased; at
   one length they all end in the same column
 - Clicking a separator does not leave you on an empty screen: focus goes
@@ -543,7 +546,7 @@ Three moving pieces, each independent, composed to give you a persistent and obs
 
 ### UI integration
 - **Terminal Profile "Persistent Session"** — available in the `+ ∨` dropdown; can be set as default so every new terminal auto-wraps in tmux
-- **Terminal Profile "Session Separator"**: a named divider tab for the terminal tab list, dragged into place like any tab. Clicking it returns focus to the tab you were on; it survives a window reload in place. See [Separators in the tab list](#separators-in-the-tab-list)
+- **Terminal Profile "─ Session Separator"**: a named divider tab for the terminal tab list, dragged into place like any tab. Clicking it returns focus to the tab you were on; it survives a window reload in place. See [Separators in the tab list](#separators-in-the-tab-list)
 - **Sidebar tree view** — grouped by workspace, with status indicators (attached vs detached) and relative timestamps. Lives **under the Explorer** by default; drag it (or right-click its header → *Move View*) to your own Activity Bar icon, the panel, or the secondary sidebar
 - **Rich hover tooltip** — hovering a session row shows its tmux ID, workspace, the actual **start folder (cwd)** for subfolder sessions, created/last-attached times, and — while an agent is active — the live **Conversation ID**, model, API-equivalent cost, context %, token totals, and the last user/assistant messages
 - **Sidebar badge** — a red numeric badge appears on the view's host icon (the Explorer, or wherever you've placed the view) when Claude sessions need attention. `waiting` count takes priority (user permission pending), falls back to `working` count. Tooltip explains which is which
@@ -556,7 +559,7 @@ Three moving pieces, each independent, composed to give you a persistent and obs
 - **Smart click behavior** — clicking a session that's already attached focuses its existing terminal tab instead of opening a duplicate
 - **Right-click context menu** on sidebar items — Add/Remove Favorites, View Conversation, Restart, Stop/Start, Move to Group, Rename, Icon, Color, Mute notifications, Lock/Unlock, Kill, Kill & Delete Data
 - **Multi-select + bulk actions** — Cmd/Ctrl- or Shift-click several session rows, then right-click: Stop, Start, Kill, Kill & Delete Data, Restart, Move to Group, Change Icon/Color, Mute/Unmute, Lock/Unlock and Add/Remove Favorites all apply to the whole selection. Destructive ones ask once for the batch (Kill & Delete Data shows the combined size); locked rows are always kept; the YOLO switch stays per-session on purpose. The same works on several selected terminal tabs
-- **Explorer right-click → "Open in Integrated Terminal - Persistent"** — on any folder, opens a persistent tmux session rooted at that folder. The VS Code tab description reflects the actual folder name, not the workspace root
+- **Explorer right-click → "Open in Integrated Terminal - Persistent"** — on any folder, opens a persistent tmux session rooted at that folder. The VS Code tab description reflects the actual folder name, not the workspace root. When Claude Code is installed, **"Open Claude - Persistent"** right below it opens the persistent session and starts `claude` in one step (`Default`, `No MCP & No Skills`, `No MCP`, or `No Skills`, keeping hooks and `CLAUDE.md` intact across restarts)
 
 ### Clickable paths & links in the terminal
 

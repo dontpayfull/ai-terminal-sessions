@@ -173,6 +173,7 @@ export async function setFilterMode(mode: SidebarFilterMode): Promise<void> {
 export const PROFILE_ID = 'terminalSessions.persistent';
 export const SEPARATOR_PROFILE_ID = 'terminalSessions.separator';
 export const SEPARATOR_LAST_PROFILE_ID = 'terminalSessions.separatorLastUsed';
+export const SEPARATOR_BLANK_PROFILE_ID = 'terminalSessions.separatorBlank';
 export const VIEW_ID = 'terminalSessions.sessions';
 export const STOPPED_URI_SCHEME = 'terminal-sessions-stopped';
 // resourceUri scheme for fork branch-set members. The BranchSetDecorationProvider
@@ -209,6 +210,10 @@ export const COMMAND = {
   lockedHint: 'terminalSessions.lockedHint',
   newPersistent: 'terminalSessions.newPersistent',
   newPersistentInFolder: 'terminalSessions.newPersistentInFolder',
+  openClaudeInFolder: 'terminalSessions.openClaudeInFolder',
+  openClaudeCleanInFolder: 'terminalSessions.openClaudeCleanInFolder',
+  openClaudeNoMcpInFolder: 'terminalSessions.openClaudeNoMcpInFolder',
+  openClaudeNoSkillsInFolder: 'terminalSessions.openClaudeNoSkillsInFolder',
   attachTo: 'terminalSessions.attachTo',
   kill: 'terminalSessions.kill',
   killDelete: 'terminalSessions.killDelete',

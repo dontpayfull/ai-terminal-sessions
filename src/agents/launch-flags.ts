@@ -33,13 +33,16 @@ export interface FlagSpec {
   /** Valueless flags to keep verbatim, e.g. `--dangerously-skip-permissions`. */
   bool: readonly string[];
   /** Value-taking flags to keep. `path:true` marks the value as a filesystem
-   *  path that must still exist at relaunch (the flag is dropped otherwise). */
-  value: Readonly<Record<string, { path?: boolean }>>;
+   *  path that must still exist at relaunch (the flag is dropped otherwise).
+   *  `allowValues` treats the flag as variadic (`<items...>`, space- or comma-
+   *  separated) and keeps only values in the allowlist. */
+  value: Readonly<Record<string, { path?: boolean; allowValues?: readonly string[] }>>;
   /** Short alias → canonical name, e.g. `-m` → `--model`. */
   alias?: Readonly<Record<string, string>>;
-  /** A flag kept only when its partner survives — e.g. `--strict-mcp-config`
-   *  needs `--mcp-config` (a lone `--strict-mcp-config` would start with zero
-   *  MCP servers, which is worse than letting claude-pick repopulate them). */
+  /** A flag kept only when its partner was not dropped by the path filter —
+   *  e.g. `--strict-mcp-config` paired with a vanished temp `--mcp-config` is
+   *  dropped so `claude-pick` can repopulate MCPs, whereas a standalone
+   *  `--strict-mcp-config` ("No MCP" mode) had no partner to lose and stays. */
   companion?: Readonly<Record<string, string>>;
 }
 
@@ -63,15 +66,38 @@ export function captureFlags(argv: readonly string[], spec: FlagSpec): string[] 
     }
     name = canon(name);
     if (spec.bool.includes(name)) {
-      out.push(name);
+      if (!out.includes(name)) out.push(name);
       continue;
     }
     const vspec = spec.value[name];
     if (vspec) {
       let val: string | undefined;
       if (inlineVal !== undefined) val = inlineVal;
-      else if (i + 1 < argv.length) val = argv[++i];
+      else if (i + 1 < argv.length) {
+        // An empty variadic value (`--disallowedTools "" --strict-mcp-config`)
+        // must not swallow the next flag as its value.
+        if (vspec.allowValues && argv[i + 1].startsWith('-')) continue;
+        val = argv[++i];
+      }
       if (val === undefined) continue;
+      if (vspec.allowValues) {
+        // `ps` flattens `--disallowedTools="Bash Skill"` into
+        // `--disallowedTools=Bash` + `Skill`, so keep reading after an inline
+        // value too.
+        const rawTokens = [val];
+        while (i + 1 < argv.length && !argv[i + 1].startsWith('-')) {
+          rawTokens.push(argv[++i]);
+        }
+        const allowed = new Set(vspec.allowValues);
+        for (const raw of rawTokens) {
+          for (const item of raw.split(/[\s,]+/)) {
+            if (!item || !allowed.has(item)) continue;
+            const already = out.some((t, idx) => t === name && out[idx + 1] === item);
+            if (!already) out.push(name, item);
+          }
+        }
+        continue;
+      }
       // `ps` collapses the argv into one space-joined string (see readAgentArgv),
       // so a path value that originally contained spaces —
       // `--add-dir "/path with spaces"` — arrives split across several tokens.
@@ -114,17 +140,22 @@ function looksLikePath(v: string): boolean {
 export function materializeFlags(flags: readonly string[], spec: FlagSpec): string[] {
   const kept: string[] = [];
   const present = new Set<string>();
+  const dropped = new Set<string>();
+  const seenBool = new Set<string>();
   for (let i = 0; i < flags.length; i++) {
     const name = flags[i];
     if (spec.value[name]) {
       const val = flags[i + 1] ?? '';
       i++; // consume value
       if (spec.value[name].path && looksLikePath(val) && !fs.existsSync(expandHome(val))) {
+        dropped.add(name);
         continue; // dead path → drop the whole flag+value
       }
       kept.push(name, val);
       present.add(name);
     } else {
+      if (seenBool.has(name)) continue;
+      seenBool.add(name);
       kept.push(name);
       present.add(name);
     }
@@ -134,9 +165,9 @@ export function materializeFlags(flags: readonly string[], spec: FlagSpec): stri
   for (let i = 0; i < kept.length; i++) {
     const name = kept[i];
     const partner = spec.companion[name];
-    if (partner && !present.has(partner)) {
+    if (partner && !present.has(partner) && dropped.has(partner)) {
       if (spec.value[name]) i++; // skip its value too, if any
-      continue; // orphan companion → drop
+      continue; // partner vanished → drop companion too
     }
     if (spec.value[name]) {
       final.push(name, kept[i + 1]);

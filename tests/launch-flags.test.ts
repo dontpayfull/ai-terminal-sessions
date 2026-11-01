@@ -15,19 +15,7 @@ import {
   type FlagSpec,
 } from '../src/agents/launch-flags';
 import { yoloSpecFor } from '../src/agents/registry';
-
-const CLAUDE_FLAG_SPEC: FlagSpec = {
-  bool: ['--dangerously-skip-permissions', '--strict-mcp-config'],
-  value: {
-    '--model': {},
-    '--permission-mode': {},
-    '--add-dir': { path: true },
-    '--settings': { path: true },
-    '--mcp-config': { path: true },
-    '--dangerously-load-development-channels': {},
-  },
-  companion: { '--strict-mcp-config': '--mcp-config' },
-};
+import { CLAUDE_FLAGS } from '../src/agents/claude';
 
 const CODEX_FLAG_SPEC: FlagSpec = {
   bool: ['--full-auto', '--dangerously-bypass-approvals-and-sandbox', '--yolo'],
@@ -51,7 +39,7 @@ test('captureFlags separates boolean flags, value flags, and drops positionals',
     'positional',
     'prompt',
   ];
-  const captured = captureFlags(argv, CLAUDE_FLAG_SPEC);
+  const captured = captureFlags(argv, CLAUDE_FLAGS);
   assert.deepEqual(captured, [
     '--dangerously-skip-permissions',
     '--model',
@@ -86,7 +74,7 @@ test('captureFlags greedily absorbs split path tokens when path exists on disk',
     // Simulated split tokens from ps output: ['claude', '--add-dir', '/tmp/ts', 'space', 'test', '123']
     const parts = tmpDir.split(' ');
     const argv = ['claude', '--add-dir', ...parts];
-    const captured = captureFlags(argv, CLAUDE_FLAG_SPEC);
+    const captured = captureFlags(argv, CLAUDE_FLAGS);
     assert.deepEqual(captured, ['--add-dir', tmpDir]);
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -108,7 +96,7 @@ test('materializeFlags keeps existing path flags and drops vanished path flags',
       '--mcp-config',
       missingFile,
     ];
-    const live = materializeFlags(flags, CLAUDE_FLAG_SPEC);
+    const live = materializeFlags(flags, CLAUDE_FLAGS);
     assert.deepEqual(live, [
       '--model',
       'claude-sonnet-4-6',
@@ -131,7 +119,7 @@ test('materializeFlags drops companion flag when its partner is dropped', () => 
     '--model',
     'claude-sonnet-4-6',
   ];
-  const result1 = materializeFlags(flagsWithMissingPartner, CLAUDE_FLAG_SPEC);
+  const result1 = materializeFlags(flagsWithMissingPartner, CLAUDE_FLAGS);
   assert.deepEqual(result1, ['--model', 'claude-sonnet-4-6']);
 
   const realMcp = path.join(os.tmpdir(), 'real-mcp.json');
@@ -144,7 +132,7 @@ test('materializeFlags drops companion flag when its partner is dropped', () => 
       '--model',
       'claude-sonnet-4-6',
     ];
-    const result2 = materializeFlags(flagsWithRealPartner, CLAUDE_FLAG_SPEC);
+    const result2 = materializeFlags(flagsWithRealPartner, CLAUDE_FLAGS);
     assert.deepEqual(result2, [
       '--strict-mcp-config',
       '--mcp-config',
@@ -329,7 +317,76 @@ test('withFlags appends single-quoted flags and shields shell metacharacters', (
   );
 });
 
+test('CLAUDE_FLAGS keeps standalone --strict-mcp-config and --disallowedTools Skill across resume', () => {
+  // 1. Standalone "No MCP" (no --mcp-config ever passed): survives materializeFlags.
+  const noMcp = captureFlags(['claude', '--strict-mcp-config', '--strict-mcp-config'], CLAUDE_FLAGS);
+  assert.deepEqual(noMcp, ['--strict-mcp-config']);
+  assert.deepEqual(materializeFlags(noMcp, CLAUDE_FLAGS), ['--strict-mcp-config']);
+
+  // 2. "No MCP & No Skills": both survive.
+  const clean = captureFlags(
+    ['claude', '--strict-mcp-config', '--disallowedTools', 'Skill'],
+    CLAUDE_FLAGS,
+  );
+  assert.deepEqual(clean, ['--strict-mcp-config', '--disallowedTools', 'Skill']);
+  assert.deepEqual(materializeFlags(clean, CLAUDE_FLAGS), [
+    '--strict-mcp-config',
+    '--disallowedTools',
+    'Skill',
+  ]);
+
+  // 3. "No Skills" routed through claude-pick with vanished temp --mcp-config and
+  //    ephemeral mcporter blockedTools: drops temp MCP + companion --strict-mcp-config
+  //    and mcp__* tools, keeps --disallowedTools Skill.
+  const missingTmp = path.join(os.tmpdir(), 'vanished-claude-pick-mcp.json');
+  if (fs.existsSync(missingTmp)) fs.unlinkSync(missingTmp);
+  const noSkillsPicked = captureFlags(
+    [
+      'claude',
+      '--disallowedTools',
+      'mcp__slack__post',
+      'mcp__slack__delete',
+      '--strict-mcp-config',
+      '--mcp-config',
+      missingTmp,
+      '--disallowed-tools=Skill',
+    ],
+    CLAUDE_FLAGS,
+  );
+  assert.deepEqual(noSkillsPicked, [
+    '--strict-mcp-config',
+    '--mcp-config',
+    missingTmp,
+    '--disallowedTools',
+    'Skill',
+  ]);
+  assert.deepEqual(materializeFlags(noSkillsPicked, CLAUDE_FLAGS), [
+    '--disallowedTools',
+    'Skill',
+  ]);
+});
+
 test('withFlags returns original command when extraFlags is empty or undefined', () => {
-  assert.equal(withFlags('claude --resume 123', [], CLAUDE_FLAG_SPEC), 'claude --resume 123');
-  assert.equal(withFlags('claude --resume 123', undefined, CLAUDE_FLAG_SPEC), 'claude --resume 123');
+  assert.equal(withFlags('claude --resume 123', [], CLAUDE_FLAGS), 'claude --resume 123');
+  assert.equal(withFlags('claude --resume 123', undefined, CLAUDE_FLAGS), 'claude --resume 123');
+});
+
+test('captureFlags reads Skill after a flattened inline --disallowedTools value', () => {
+  // `claude --disallowedTools="Bash Skill"` arrives from ps as two tokens.
+  assert.deepEqual(
+    captureFlags(['claude', '--disallowedTools=Bash', 'Skill', '--model', 'opus'], CLAUDE_FLAGS),
+    ['--disallowedTools', 'Skill', '--model', 'opus'],
+  );
+  assert.deepEqual(
+    captureFlags(['claude', '--disallowed-tools=mcp__slack__post,', 'Skill'], CLAUDE_FLAGS),
+    ['--disallowedTools', 'Skill'],
+  );
+});
+
+test('captureFlags does not let an empty --disallowedTools swallow the next flag', () => {
+  // `claude --disallowedTools "" --strict-mcp-config` flattens to adjacent flags.
+  assert.deepEqual(
+    captureFlags(['claude', '--disallowedTools', '--strict-mcp-config'], CLAUDE_FLAGS),
+    ['--strict-mcp-config'],
+  );
 });

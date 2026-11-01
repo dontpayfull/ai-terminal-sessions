@@ -510,6 +510,22 @@
         "title": "Open in Integrated Terminal - Persistent"
       },
       {
+        "command": "terminalSessions.openClaudeInFolder",
+        "title": "Default"
+      },
+      {
+        "command": "terminalSessions.openClaudeCleanInFolder",
+        "title": "No MCP & No Skills"
+      },
+      {
+        "command": "terminalSessions.openClaudeNoMcpInFolder",
+        "title": "No MCP"
+      },
+      {
+        "command": "terminalSessions.openClaudeNoSkillsInFolder",
+        "title": "No Skills"
+      },
+      {
         "command": "terminalSessions.attachTo",
         "title": "Terminal Sessions: Attach to Session..."
       },
@@ -1083,6 +1099,12 @@
         "category": "Terminal Sessions"
       }
     ],
+    "submenus": [
+      {
+        "id": "terminalSessions.openClaudeSubmenu",
+        "label": "Open Claude - Persistent"
+      }
+    ],
     "menus": {
       "commandPalette": [
         {
@@ -1316,12 +1338,50 @@
         {
           "command": "terminalSessions.removeTagSeparator",
           "when": "false"
+        },
+        {
+          "command": "terminalSessions.openClaudeInFolder",
+          "when": "false"
+        },
+        {
+          "command": "terminalSessions.openClaudeCleanInFolder",
+          "when": "false"
+        },
+        {
+          "command": "terminalSessions.openClaudeNoMcpInFolder",
+          "when": "false"
+        },
+        {
+          "command": "terminalSessions.openClaudeNoSkillsInFolder",
+          "when": "false"
         }
       ],
       "explorer/context": [
         {
           "command": "terminalSessions.newPersistentInFolder",
-          "group": "navigation"
+          "group": "navigation@1"
+        },
+        {
+          "submenu": "terminalSessions.openClaudeSubmenu",
+          "group": "navigation@2"
+        }
+      ],
+      "terminalSessions.openClaudeSubmenu": [
+        {
+          "command": "terminalSessions.openClaudeInFolder",
+          "group": "1_open@1"
+        },
+        {
+          "command": "terminalSessions.openClaudeCleanInFolder",
+          "group": "1_open@2"
+        },
+        {
+          "command": "terminalSessions.openClaudeNoMcpInFolder",
+          "group": "1_open@3"
+        },
+        {
+          "command": "terminalSessions.openClaudeNoSkillsInFolder",
+          "group": "1_open@4"
         }
       ],
       "terminal/context": [
@@ -2132,12 +2192,17 @@
         },
         {
           "id": "terminalSessions.separator",
-          "title": "Session Separator",
+          "title": "─ Session Separator",
           "icon": "dash"
         },
         {
           "id": "terminalSessions.separatorLastUsed",
-          "title": "Session Separator (Last Used)",
+          "title": "─ Session Separator (Last Used)",
+          "icon": "dash"
+        },
+        {
+          "id": "terminalSessions.separatorBlank",
+          "title": "─ Session Separator (Blank)",
           "icon": "dash"
         }
       ]

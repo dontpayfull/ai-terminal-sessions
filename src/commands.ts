@@ -30,6 +30,7 @@ import { setAsDefaultProfile, restorePreviousDefaultProfile } from './default-pr
 import { separatorOf, openSeparator } from './separator';
 import { registerTagCommands } from './tag-commands';
 import { readTabOrder } from './tab-order';
+import { posixQuote } from './shell-escape';
 
 /** Delay between opening the attached terminal and sending `claude --resume`,
  *  giving the shell time to finish rc/zshrc init. Heavy zsh setups (oh-my-zsh,
@@ -237,6 +238,13 @@ export function registerCommands(
   ctx.subscriptions.push(
     vscode.commands.registerCommand(COMMAND.newPersistent, () => cmdNewPersistent(index)),
     vscode.commands.registerCommand(COMMAND.newPersistentInFolder, (uri?: vscode.Uri) => cmdNewPersistent(index, uri)),
+    vscode.commands.registerCommand(COMMAND.openClaudeInFolder, (uri?: vscode.Uri) => cmdNewPersistent(index, uri, [])),
+    vscode.commands.registerCommand(COMMAND.openClaudeCleanInFolder, (uri?: vscode.Uri) =>
+      cmdNewPersistent(index, uri, ['--strict-mcp-config', '--disallowedTools', 'Skill'])),
+    vscode.commands.registerCommand(COMMAND.openClaudeNoMcpInFolder, (uri?: vscode.Uri) =>
+      cmdNewPersistent(index, uri, ['--strict-mcp-config'])),
+    vscode.commands.registerCommand(COMMAND.openClaudeNoSkillsInFolder, (uri?: vscode.Uri) =>
+      cmdNewPersistent(index, uri, ['--disallowedTools', 'Skill'])),
     vscode.commands.registerCommand(COMMAND.attachTo, (item?: SessionTreeItem) => cmdAttachTo(index, item)),
     registerTabBulk(index, COMMAND.kill, (item?: SessionTreeItem | vscode.Terminal, selection?: vscode.TreeItem[]) => {
       const many = selectionTargets(selection);
@@ -2669,7 +2677,11 @@ async function cmdReloadTmuxConfig(): Promise<void> {
 
 // ── Session lifecycle commands ───────────────────────────────────────────
 
-async function cmdNewPersistent(index: SessionIndex, targetUri?: vscode.Uri): Promise<void> {
+async function cmdNewPersistent(
+  index: SessionIndex,
+  targetUri?: vscode.Uri,
+  claudeFlags?: readonly string[],
+): Promise<void> {
   const tmuxPath = await requireTmux();
   if (!tmuxPath) return;
   const cfg = getConfig();
@@ -2715,6 +2727,9 @@ async function cmdNewPersistent(index: SessionIndex, targetUri?: vscode.Uri): Pr
   // simple "new session in workspace" still inherits future workspace renames.
   const folderPathToStore = cwd !== wsPath ? cwd : undefined;
   index.recordSession(wsHash, name, folderLabel, folderPathToStore);
+  if (claudeFlags && claudeFlags.length > 0) {
+    index.recordResumeFlags(wsHash, name, 'claude', [...claudeFlags]);
+  }
   const meta = index.getSessionMeta(wsHash, name);
   const { icon, color } = metaIconAndColor(meta);
   const termName = defaultTermName(wsLabel, tabId, meta?.label);
@@ -2728,6 +2743,16 @@ async function cmdNewPersistent(index: SessionIndex, targetUri?: vscode.Uri): Pr
   });
   term.show();
   refreshSidebar();
+  if (claudeFlags !== undefined) {
+    await sleep(SHELL_INIT_DELAY_MS);
+    if (vscode.window.terminals.includes(term) && !term.exitStatus) {
+      const cmd = claudeFlags.length > 0
+        ? `claude ${claudeFlags.map(posixQuote).join(' ')}`
+        : 'claude';
+      try { term.sendText(cmd); }
+      catch (e) { console.error('[terminal-sessions] openClaude sendText failed:', e); }
+    }
+  }
 }
 
 /**

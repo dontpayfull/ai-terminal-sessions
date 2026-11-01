@@ -25,9 +25,11 @@ const UUID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0
 const SETTINGS_PATH = path.join(os.homedir(), '.claude', 'settings.json');
 
 // Launch flags worth restoring on resume. `--strict-mcp-config`/`--mcp-config`
-// are captured but the path filter drops the ephemeral claude-pick temp at
-// relaunch (and `--strict-mcp-config` goes with it), leaving MCP to claude-pick.
-const CLAUDE_FLAGS: FlagSpec = {
+// are captured together when `claude-pick` ran, and the path filter drops the
+// vanished temp file + its companion `--strict-mcp-config` at relaunch. When
+// `--strict-mcp-config` was passed standalone ("No MCP"), it stays. For
+// `--disallowedTools` only `Skill` ("No Skills") is kept across relaunches.
+export const CLAUDE_FLAGS: FlagSpec = {
   bool: ['--dangerously-skip-permissions', '--strict-mcp-config'],
   value: {
     '--model': {},
@@ -35,9 +37,11 @@ const CLAUDE_FLAGS: FlagSpec = {
     '--add-dir': { path: true },
     '--settings': { path: true },
     '--mcp-config': { path: true },
+    '--disallowedTools': { allowValues: ['Skill'] },
     // CoPane and other dev channels: without it a Restart silently unloads them
     '--dangerously-load-development-channels': {},
   },
+  alias: { '--disallowed-tools': '--disallowedTools' },
   companion: { '--strict-mcp-config': '--mcp-config' },
 };
 

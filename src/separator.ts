@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { execFile } from 'child_process';
-import { COMMAND, SEPARATOR_PROFILE_ID, SEPARATOR_LAST_PROFILE_ID } from './config';
+import { COMMAND, SEPARATOR_PROFILE_ID, SEPARATOR_LAST_PROFILE_ID, SEPARATOR_BLANK_PROFILE_ID } from './config';
 import { isWalkingTabs, onTabWalkEnd } from './tab-order';
 
 /**
@@ -346,6 +346,16 @@ export function registerSeparators(ctx: vscode.ExtensionContext): void {
         if (separatorStyle(name) === 'blank') vscode.window.setStatusBarMessage('Blank separator added at the end of the tab list', 4000);
       }),
     ]),
+    // A blank row in one click: no questions, and the last look stays as it was.
+    vscode.window.registerTerminalProfileProvider(SEPARATOR_BLANK_PROFILE_ID, {
+      provideTerminalProfile() {
+        if (process.platform === 'win32') {
+          throw new Error('Separator tabs need a POSIX shell (macOS, Linux, WSL or Remote-SSH).');
+        }
+        vscode.window.setStatusBarMessage('Blank separator added at the end of the tab list', 4000);
+        return new vscode.TerminalProfile(separatorOptions(separatorName('', 'blank')));
+      },
+    }),
     vscode.window.onDidChangeActiveTerminal(t => { if (!isWalkingTabs()) void note(t); }),
     onTabWalkEnd(() => void note(vscode.window.activeTerminal)),
   );

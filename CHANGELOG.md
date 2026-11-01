@@ -4,6 +4,17 @@ All notable changes to the Terminal Sessions extension.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project uses semantic versioning once past 1.0.0.
 
+## [Unreleased]
+
+### Added
+
+- **Open Claude - Persistent** submenu in the Explorer folder context menu, right below **Open in Integrated Terminal - Persistent**: starts Claude in a new persistent session with **Default**, **No MCP & No Skills** (`--strict-mcp-config --disallowedTools Skill`), **No MCP**, or **No Skills**, while keeping hooks, `/clear`, `/compact`, `/model` and `CLAUDE.md` intact across restarts and resumes.
+- **─ Session Separator (Blank)** in the `+ ∨` dropdown adds a blank separator row in one click, with no questions.
+
+### Changed
+
+- The separator profiles are now **─ Session Separator** and **─ Session Separator (Last Used)**, so the `+ ∨` dropdown, which sorts by name, lists them right under the default profile instead of among the shells.
+
 ## [0.41.1] — 2026-10-30
 
 ### Changed
