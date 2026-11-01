@@ -19,6 +19,13 @@ export function setSidebarTitleSource(fn: ((sessionName: string) => string | und
   sidebarTitle = fn;
 }
 
+/** The title of the conversation a session last ran, whether or not Follow
+ *  Conversation Title is on (fork-group headers use it). */
+let conversationTitleOf: ((sessionName: string) => string | undefined) | undefined;
+export function setConversationTitleSource(fn: ((sessionName: string) => string | undefined) | undefined): void {
+  conversationTitleOf = fn;
+}
+
 class StoppedSessionDecorationProvider implements vscode.FileDecorationProvider {
   provideFileDecoration(uri: vscode.Uri): vscode.FileDecoration | undefined {
     if (uri.scheme !== STOPPED_URI_SCHEME) return undefined;
@@ -324,7 +331,7 @@ class SessionsTreeProvider
     const item = new SessionTreeItem(
       s, this.claude.getSnapshot(s.name), cfg.claudeSidebarDetails, cfg.contextWarnPct, inCluster,
       this.notes.has(s.workspaceHash, s.name),
-      s.stopped ? undefined : sidebarTitle?.(s.name),
+      sidebarTitle?.(s.name),
     );
     // Mirror rows (Sessions Activity) skip the cache: reveal/getParent must
     // keep resolving to the canonical row inside its group.
@@ -493,9 +500,23 @@ class SessionsTreeProvider
 
   private buildCluster(hash: string, setId: string, members: SessionInfo[]): BranchClusterItem {
     const first = members[0];
-    const baseLabel = first.branchBaseLabel
+    const set = this.index.getBranchSet(hash, setId);
+    let baseLabel = set?.customName
+      || first.branchBaseLabel
       || first.branchName?.replace(/\s*⑂\s*$/, '')
       || 'fork';
+    // An origin that never had a name of its own (workspace or folder name,
+    // `#N`) says nothing: show the origin conversation's title instead.
+    if (!set?.customName) {
+      const wsLabel = this.index.getWorkspace(hash)?.label;
+      const isDefault = baseLabel === wsLabel || /^#\d+$/.test(baseLabel)
+        || members.some(m => m.folderPath?.split('/').pop() === baseLabel);
+      if (isDefault) {
+        const origin = members.reduce((a, b) => (b.createdAt.getTime() < a.createdAt.getTime() ? b : a));
+        const title = sidebarTitle?.(origin.name) ?? conversationTitleOf?.(origin.name);
+        if (title) baseLabel = title;
+      }
+    }
     const item = new BranchClusterItem(hash, setId, members, baseLabel, first.branchColorId, first.groupId);
     this.lastClusterItems.set(`${hash}::${setId}`, item);
     return item;
@@ -655,8 +676,8 @@ class SessionsTreeProvider
           ? this.index.getWorkspace(s.workspaceHash)?.groups?.[s.groupId]?.name
           : undefined;
         const matches = filtered.filter(s => {
-          const hay = [s.label, s.name, s.folderPath, s.workspacePath, s.workspaceLabel, groupNameOf(s),
-            ...(s.tags ?? []).map(t => `#${t}`)]
+          const hay = [s.label, sidebarTitle?.(s.name), s.name, s.folderPath, s.workspacePath, s.workspaceLabel,
+            groupNameOf(s), this.notes.get(s.workspaceHash, s.name)?.text, ...(s.tags ?? []).map(t => `#${t}`)]
             .filter(Boolean).join(' ').toLowerCase();
           return this.textFilterTokens.every(t => hay.includes(t));
         });

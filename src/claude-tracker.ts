@@ -22,7 +22,7 @@ import {
 } from './notifications';
 import { classifyOutcome, outcomeIsBad, type TurnOutcome } from './outcome';
 import { getConfig } from './config';
-import { TranscriptTailer, TranscriptSnapshot, SubagentSnapshot, SubagentState } from './claude-transcript';
+import { TranscriptTailer, TranscriptSnapshot, SubagentSnapshot, SubagentState, BackgroundShell } from './claude-transcript';
 
 /** What the agent is actually asking for, from the hook's own message
  *  ("Claude needs your permission to use Bash"), rather than a fixed sentence
@@ -60,6 +60,9 @@ export interface ClaudeSnapshot {
   lastStartAt?: Date;
   /** The SessionStart's `source`, when the agent reports one. */
   lastStartSource?: string;
+  /** When the agent process itself started: a SessionStart other than
+   *  /compact or /clear, which keep the process (and its background shells). */
+  processStartAt?: Date;
   toolName?: string;
   toolInput?: string;
   toolSince?: Date;
@@ -83,6 +86,8 @@ export interface ClaudeSnapshot {
   transcriptPath?: string;
   /** Flat list of subagents (tree is built at render time from parentId). */
   subagents?: SubagentSnapshot[];
+  /** Shells the lead left running in the background (from the transcript). */
+  backgroundShells?: BackgroundShell[];
   /** Timestamp at which `state` was set to 'waiting' by a permission-blocking
    *  Notification. Used by the transcript tailer to detect when Claude has
    *  resumed after the wait (new assistant/user activity newer than this) and
@@ -122,13 +127,44 @@ export function runningAgents(snap: { subagents?: SubagentSnapshot[] } | undefin
     .filter(s => s.viaDir && (s.state === 'working' || s.state === 'tool')).length;
 }
 
-/** An idle lead whose background agents are still at work. */
-export function agentsAtWork(snap: Pick<ClaudeSnapshot, 'state' | 'subagents'> | undefined): boolean {
-  return snap?.state === 'idle' && runningAgents(snap) > 0;
+/** A background shell older than this is not waited on any more: its
+ *  notification was lost, or the agent that started it is gone. */
+const SHELL_WAIT_MAX_MS = 6 * 3600 * 1000;
+
+/** Background shells (`Bash` with `run_in_background`) still running. The
+ *  lead's turn ends while they run and it is woken by their task
+ *  notification, so like background agents they keep the session at work.
+ *  Shells from before the agent process started died with the previous one. */
+export function runningShells(snap: ShellView | undefined): number {
+  const now = Date.now();
+  const born = (snap?.processStartAt ?? snap?.lastStartAt)?.getTime() ?? 0;
+  const stopped = snap?.lastStopAt?.getTime() ?? 0;
+  return (snap?.backgroundShells || []).filter(s => s.since >= born && now - s.since < SHELL_WAIT_MAX_MS
+    // A finished one counts until the turn it woke ends, for a short while.
+    && (s.doneAt === undefined || (now - s.doneAt < SHELL_WAKE_GRACE_MS && stopped < s.doneAt))).length;
+}
+
+type ShellView = { backgroundShells?: BackgroundShell[]; lastStartAt?: Date; processStartAt?: Date; lastStopAt?: Date };
+
+/** How long a finished shell waits for the turn its notification wakes. */
+const SHELL_WAKE_GRACE_MS = 30_000;
+
+/** Everything the lead is waiting on: background agents and shells. */
+export function backgroundWork(
+  snap: (ShellView & { subagents?: SubagentSnapshot[] }) | undefined,
+): number {
+  return runningAgents(snap) + runningShells(snap);
+}
+
+/** An idle lead whose background agents or shells are still at work. */
+export function agentsAtWork(
+  snap: Pick<ClaudeSnapshot, 'state' | 'subagents' | 'backgroundShells' | 'lastStartAt' | 'processStartAt' | 'lastStopAt'> | undefined,
+): boolean {
+  return snap?.state === 'idle' && backgroundWork(snap) > 0;
 }
 
 /** Busy either way: a turn in progress, or one waiting on its agents. */
-export function isBusy(snap: Pick<ClaudeSnapshot, 'state' | 'subagents'> | undefined): boolean {
+export function isBusy(snap: Pick<ClaudeSnapshot, 'state' | 'subagents' | 'backgroundShells' | 'lastStartAt' | 'processStartAt' | 'lastStopAt'> | undefined): boolean {
   return snap?.state === 'working' || snap?.state === 'tool' || agentsAtWork(snap);
 }
 
@@ -668,6 +704,7 @@ export class ClaudeTracker {
       if (t) {
         snap.transcriptPath = t.path;
         snap.subagents = t.subagents;
+        snap.backgroundShells = t.backgroundShells;
         snap.model = t.model;
         snap.lastUserMessage = t.lastUserMessage;
         snap.lastAssistantMessage = t.lastAssistantMessage;
@@ -1452,6 +1489,7 @@ export class ClaudeTracker {
         snap.state = 'idle';
         snap.lastStartAt = new Date(tsMs);
         snap.lastStartSource = e.source;
+        if (e.source !== 'compact' && e.source !== 'clear') snap.processStartAt = snap.lastStartAt;
         // A (re)launch starts a fresh run: whatever the previous run left unread
         // is history now, not something the new run finished.
         if (Date.now() - tsMs < NOTIFY_STALE_MS) this.markSeen(e.tmuxSession);
@@ -1540,7 +1578,7 @@ export class ClaudeTracker {
         // Background agents still running: the lead is woken when they report
         // back and its next Stop is the real finish, so no unread marker and
         // no "done" banner yet. Kept pending in case the lead never wakes.
-        const agentsRunning = runningAgents(t) > 0;
+        const agentsRunning = backgroundWork(t && { ...t, lastStartAt: snap.lastStartAt, processStartAt: snap.processStartAt, lastStopAt: snap.lastStopAt }) > 0;
         if (Date.now() - tsMs < NOTIFY_STALE_MS) {
           this.lastDerived.set(e.tmuxSession, 'idle');
           if (agentsRunning) this.pendingFinish.set(e.tmuxSession, { cwd: e.cwd, agent });

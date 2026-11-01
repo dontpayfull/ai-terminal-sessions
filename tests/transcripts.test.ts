@@ -594,3 +594,32 @@ test('Claude reduceClaudeTranscriptLine does not take a compaction summary for a
   assert.equal(state.snapshot.lastUserMessageAt?.toISOString(), '2026-10-19T12:00:00.000Z');
   assert.equal(state.snapshot.messageCount, 1);
 });
+
+test('trackBackgroundShells: started, finished by task notification, stopped by TaskStop', async () => {
+  const { trackBackgroundShells } = await import('../src/claude-transcript');
+  const { runningShells } = await import('../src/claude-tracker');
+  const snap = { sessionId: 's', path: '/x' } as Parameters<typeof trackBackgroundShells>[0];
+  const feed = (o: Record<string, unknown>): boolean => trackBackgroundShells(snap, JSON.stringify(o), o);
+  const now = new Date().toISOString();
+  assert.equal(feed({ type: 'user', timestamp: now, message: { content: [{ type: 'tool_result', content: 'Command running in background with ID: b1' }] } }), true);
+  feed({ type: 'user', timestamp: now, message: { content: [{ type: 'tool_result', content: 'Command running in background with ID: b2' }] } });
+  assert.equal(runningShells(snap), 2);
+  // Finished: the notification is queued, then delivered (second one is a no-op).
+  assert.equal(feed({ type: 'queue-operation', content: '<task-notification>\n<task-id>b1</task-id>\n<status>completed</status>' }), true);
+  assert.equal(feed({ type: 'user', message: { content: '<task-notification>\n<task-id>b1</task-id>' } }), false);
+  // b1 still counts until the turn its notification wakes ends.
+  assert.equal(runningShells(snap), 2);
+  const later = new Date(Date.now() + 1000);
+  assert.equal(runningShells({ ...snap, lastStopAt: later }), 1);
+  feed({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'TaskStop', input: { task_id: 'b2' } }] } });
+  assert.equal(runningShells({ ...snap, lastStopAt: later }), 0);
+  // A sidechain (subagent) line never counts.
+  feed({ type: 'user', isSidechain: true, timestamp: now, message: { content: [{ type: 'tool_result', content: 'Command running in background with ID: b3' }] } });
+  assert.equal(runningShells({ ...snap, lastStopAt: later }), 0);
+  // The phrase inside a file the agent read, or in a prompt, is not a shell.
+  assert.equal(feed({ type: 'user', timestamp: now, message: { content: [{ type: 'tool_result', content: '12\tconst x = "Command running in background with ID: f1";' }] } }), false);
+  assert.equal(feed({ type: 'user', timestamp: now, message: { content: 'Command running in background with ID: p1' } }), false);
+  // Shells from before the agent last started died with it.
+  assert.equal(feed({ type: 'user', timestamp: '2020-01-01T00:00:00Z', message: { content: [{ type: 'tool_result', content: [{ type: 'text', text: 'Command running in background with ID: old' }] }] } }), true);
+  assert.equal(runningShells({ ...snap, lastStartAt: new Date(Date.now() - 60_000), lastStopAt: later }), 0);
+});

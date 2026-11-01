@@ -4,15 +4,25 @@ All notable changes to the Terminal Sessions extension.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project uses semantic versioning once past 1.0.0.
 
-## [Unreleased]
+## [0.42.0] — 2026-11-01
 
 ### Added
 
 - **Open Claude - Persistent** submenu in the Explorer folder context menu, right below **Open in Integrated Terminal - Persistent**: starts Claude in a new persistent session with **Default**, **No MCP & No Skills** (`--strict-mcp-config --disallowedTools Skill`), **No MCP**, or **No Skills**, while keeping hooks, `/clear`, `/compact`, `/model` and `CLAUDE.md` intact across restarts and resumes.
+- **Resume Conversation by ID...**: paste a conversation id, or click a `cursor://visul.terminal-sessions/resume?agent=claude&id=<id>` link printed in the terminal (or opened from outside), and choose where it resumes: its own session, started or restored if needed, or a new one. Only the agent and id are taken from the link; folder and transcript come from the agent's own storage.
 - **─ Session Separator (Blank)** in the `+ ∨` dropdown adds a blank separator row in one click, with no questions.
+
+- **Rename Fork Group…** on a fork group row. Without a name of its own, a group whose origin was never named shows the origin conversation's title instead of the workspace name.
+
+### Fixed
+
+- A Claude session whose turn ended while a shell it started in the background (`Bash` with `run_in_background`) was still running showed as done, green, and sent the done alert. It now stays at work, like with background agents, until the shell's task notification arrives and the turn it wakes ends, or the shell is stopped; the alert comes with the real finish. Only the tool result that started the shell counts (a file the agent read that mentions one does not), and `/compact` keeps the shells it had.
 
 ### Changed
 
+- **Search & Resume Conversations** (the `$(history)` button, formerly Resume Session from Archive) is now the one place to find a past conversation; the old search button is merged into it. Typing filters the list itself by title, session name and folder; with Search inside conversations on (off by default) it also matches every prompt you typed (not only the first and last) and, a moment later, what the agent answered (Claude, with the editor's own ripgrep, from 3 letters, files the agent read skipped). Title matches come first, then conversations your sessions ran, then prompt matches; runs started by tools (`claude -p`, `codex exec`, delegated Codex or Grok reviews) are hidden (Antigravity ones unless a session runs them, since it marks none); Filters → Also search runs made by agents includes them. Every row says where it matched; answer-only matches get a section of their own. The title shows the filters; title-bar buttons switch scope and searching inside conversations and open a Filters view (agents, time, reset) inside the picker; `@agent` and `7d` narrow one query; an empty result offers to search everywhere. The list shows the newest 500 rows and counts the rest; Claude conversations come from the search index, which reads a growing transcript only from where it stopped (while it is first built, the picker shows what it has and fills in when done). Searching inside conversations covers Claude conversations.
+- With Follow Conversation Title on, a stopped or paused session keeps the last conversation title it showed, as long as that conversation is still the one it resumes. Sessions stopped before this version get theirs read once.
+- The sidebar filter and **Search Sessions** also match the conversation title and the session's note.
 - The separator profiles are now **─ Session Separator** and **─ Session Separator (Last Used)**, so the `+ ∨` dropdown, which sorts by name, lists them right under the default profile instead of among the shells.
 
 ## [0.41.1] — 2026-10-30

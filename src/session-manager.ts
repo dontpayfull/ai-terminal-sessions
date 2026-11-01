@@ -389,6 +389,26 @@ export class SessionIndex {
     this.save();
   }
 
+  /** Remember the conversation title the follower showed, for `conv`. */
+  setSessionFollowedTitle(hash: string, sessionName: string, title: string, conv: string): void {
+    this.reloadIfChanged();
+    const meta = this.data.workspaces[hash]?.sessions[sessionName];
+    if (!meta) return;
+    if (meta.followedTitle === title && meta.followedTitleConv === conv) return;
+    meta.followedTitle = title;
+    meta.followedTitleConv = conv;
+    this.save();
+  }
+
+  clearSessionFollowedTitle(hash: string, sessionName: string): void {
+    this.reloadIfChanged();
+    const meta = this.data.workspaces[hash]?.sessions[sessionName];
+    if (!meta || (meta.followedTitle === undefined && meta.followedTitleConv === undefined)) return;
+    delete meta.followedTitle;
+    delete meta.followedTitleConv;
+    this.save();
+  }
+
   setSessionLocked(hash: string, sessionName: string, locked: boolean): void {
     this.reloadIfChanged();
     const ws = this.data.workspaces[hash];
@@ -891,6 +911,16 @@ export class SessionIndex {
       }
     }
     if (changed) this.save();
+  }
+
+  /** Name a fork group; undefined goes back to the automatic name. */
+  setBranchSetCustomName(hash: string, branchSetId: string, name: string | undefined): void {
+    this.reloadIfChanged();
+    const set = this.data.workspaces[hash]?.branchSets?.[branchSetId];
+    if (!set) return;
+    if (name) set.customName = name;
+    else delete set.customName;
+    this.save();
   }
 
   getBranchSet(hash: string, branchSetId: string): BranchSet | undefined {

@@ -192,6 +192,7 @@ export const grokProvider: AgentProvider = {
           lineCount: s?.lineCount,
           byteSize: s?.byteSize,
           mtimeMs: s?.mtimeMs,
+          automated: isGrokHeadless(path.join(bucket, sid)),
         });
       }
     }
@@ -236,4 +237,18 @@ export function readGrokActiveSessions(): GrokActiveSession[] {
   } catch {
     return [];
   }
+}
+
+/** A session the user did not type in: its summary says `session_kind:
+ *  headless` (`grok -p`, a delegated review) or `subagent`; older ones only
+ *  record their question tool as non-interactive. */
+function isGrokHeadless(sessionDir: string): boolean {
+  try {
+    const kind = JSON.parse(fs.readFileSync(path.join(sessionDir, 'summary.json'), 'utf8'))?.session_kind;
+    // `subagent`: a task it spawned itself, not a conversation either.
+    if (kind === 'headless' || kind === 'subagent') return true;
+  } catch { /* no summary: fall through */ }
+  try {
+    return /"non_interactive"\s*:\s*true/.test(fs.readFileSync(path.join(sessionDir, 'resources_state.json'), 'utf8'));
+  } catch { return false; }
 }

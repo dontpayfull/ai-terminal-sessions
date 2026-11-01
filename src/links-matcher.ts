@@ -201,3 +201,39 @@ export function findWebCandidates(rawLine: string): WebCandidate[] {
   }
   return out;
 }
+
+// ---------------------------------------------------------------------------
+// "Resume conversation" links printed by search tools:
+//   cursor://visul.terminal-sessions/resume?agent=claude&id=<id>
+// Matched on the rendered text and handled in-process, so a click works in any
+// editor flavour (cursor, vscode, vscode-insiders…) and through tmux/SSH,
+// without the OS URI round-trip or terminal.integrated.allowedLinkSchemes.
+// ---------------------------------------------------------------------------
+
+export interface ResumeLinkCandidate {
+  start: number;
+  length: number;
+  id: string;
+  agent?: string;
+}
+
+const RESUME_RE = /(?<![\w.+-])[a-z][a-z0-9+.-]*:\/\/visul\.terminal-sessions\/resume\?[^\s"'`<>|]+/gi;
+
+export function findResumeLinks(rawLine: string): ResumeLinkCandidate[] {
+  if (!rawLine || !rawLine.includes('visul.terminal-sessions/resume')) return [];
+  const line = rawLine.length > MAX_LINE_LENGTH ? rawLine.slice(0, MAX_LINE_LENGTH) : rawLine;
+  const out: ResumeLinkCandidate[] = [];
+  RESUME_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = RESUME_RE.exec(line)) !== null && out.length < MAX_WEB_LINKS_PER_LINE) {
+    let matched = m[0];
+    const punct = matched.match(WEB_TRAILING_RE);
+    if (punct) matched = matched.slice(0, -punct[0].length);
+    const q = new URLSearchParams(matched.slice(matched.indexOf('?') + 1));
+    const id = q.get('id')?.trim();
+    if (!id) continue;
+    const agent = q.get('agent')?.trim() || undefined;
+    out.push({ start: m.index, length: matched.length, id, agent });
+  }
+  return out;
+}

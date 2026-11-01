@@ -7,7 +7,7 @@ import * as tmux from './tmux';
 import { SessionIndex, enrichSessions } from './session-manager';
 import { openTerminalForSession, findTerminalForSession, findVerifiedTabForSession, metaIconAndColor, sessionNameForTerminal, resolveTmuxNameForTerminalLive, nextSafeTabId, PARKED_PREFIX, setTabRetitler, followedTitleFor } from './profile-provider';
 import { currentWorkspace, hashPath, sessionName as buildSessionName, parseSessionName } from './workspace-id';
-import { SessionTreeItem, SubagentTreeItem, GroupTreeItem, WorkspaceTreeItem, KilledSessionItem, SessionsFolderItem } from './sidebar/items';
+import { SessionTreeItem, SubagentTreeItem, GroupTreeItem, WorkspaceTreeItem, KilledSessionItem, SessionsFolderItem, BranchClusterItem } from './sidebar/items';
 import { refreshSidebar, collapseAllSessions, revealSessionInSidebar, setSidebarTextFilter, getSidebarTextFilter } from './sidebar/tree-provider';
 import { SessionInfo } from './types';
 import { humanAge, sleep } from './util';
@@ -15,9 +15,11 @@ import { maybeOfferRestore } from './restore';
 import { notify, removeNotification, sessionGroupId, playAlertSound, ALERT_SOUNDS } from './notifications';
 import { conversationTitle } from './conversation-title';
 import { maybeWarnMouseEnv, findMouseEnvLines, commentOutMouseEnv } from './mouse-clicks-guard';
-import { ClaudeTracker, isBusy, agentsAtWork, runningAgents } from './claude-tracker';
-import { ClaudeSearchIndex, SessionIndexEntry } from './claude-search';
-import { transcriptPathFor, findTranscriptBySessionId, readTranscriptCwd, readTranscriptSummary, writeClaudeCustomTitle, queueClaudeLiveTitle } from './claude-transcript';
+import { ClaudeTracker, isBusy, agentsAtWork, runningAgents, runningShells } from './claude-tracker';
+import { ClaudeSearchIndex, SessionIndexEntry, promptSnippet } from './claude-search';
+import { archivedFromEntry, cutoffFor, parseArchiveQuery } from './conversation-search';
+import { findRipgrep, searchDirs, deepSearch, recentTranscripts, MIN_ANSWER_QUERY } from './deep-search';
+import { slugFromCwd, transcriptPathFor, findTranscriptBySessionId, readTranscriptCwd, readTranscriptSummary, writeClaudeCustomTitle, queueClaudeLiveTitle } from './claude-transcript';
 import { transcriptToMarkdown } from './transcript-render';
 import { scanArchive, ArchivedSession, classifyForCleanup, softDeleteSession, buildSessionConversationIndex, LinkedTerminalSession } from './archive';
 import { planTrash, executeTrash, formatBytes } from './trash';
@@ -29,6 +31,8 @@ import type { TerminalTracker } from './terminal-tracker';
 import { setAsDefaultProfile, restorePreviousDefaultProfile } from './default-profile';
 import { separatorOf, openSeparator } from './separator';
 import { registerTagCommands } from './tag-commands';
+import { noteStore } from './notes';
+import { isTitlePinned } from './title-follow';
 import { readTabOrder } from './tab-order';
 import { posixQuote } from './shell-escape';
 
@@ -319,6 +323,7 @@ export function registerCommands(
     }),
     vscode.commands.registerCommand(COMMAND.forkConversation, (item?: SessionTreeItem | vscode.Terminal) => cmdForkConversation(index, registry, claudeTracker, item)),
     vscode.commands.registerCommand(COMMAND.unlinkBranch, (item?: SessionTreeItem) => cmdUnlinkBranch(index, item)),
+    vscode.commands.registerCommand(COMMAND.renameForkGroup, (item?: BranchClusterItem) => cmdRenameForkGroup(index, item)),
     registerTabBulk(index, COMMAND.start, async (item?: SessionTreeItem | vscode.Terminal, selection?: vscode.TreeItem[]) => {
       const many = selectionTargets(selection);
       // From a parked tab's menu: the tab names the session.
@@ -336,7 +341,6 @@ export function registerCommands(
     }),
     vscode.commands.registerCommand(COMMAND.pickSortMode, () => cmdPickSortMode(index)),
     vscode.commands.registerCommand(COMMAND.pickFilterMode, () => cmdPickFilterMode()),
-    vscode.commands.registerCommand(COMMAND.findSession, () => cmdFindSession(index, searchIndex)),
     vscode.commands.registerCommand(COMMAND.searchSessions, () => cmdSearchSessions(index, registry, claudeTracker)),
     vscode.commands.registerCommand(COMMAND.filterSessions, () => cmdFilterSessions()),
     vscode.commands.registerCommand(COMMAND.clearSidebarTextFilter, () => setSidebarTextFilter(undefined)),
@@ -423,7 +427,15 @@ export function registerCommands(
     vscode.commands.registerCommand(COMMAND.setGroupColor, (item?: GroupTreeItem) => cmdSetGroupColor(index, item)),
     vscode.commands.registerCommand(COMMAND.moveSessionToGroup, (item?: SessionTreeItem, selection?: vscode.TreeItem[]) => cmdMoveSessionToGroup(index, item, selection)),
     vscode.commands.registerCommand(COMMAND.resumeOtherClaude, (item?: SessionTreeItem) => cmdResumeOtherClaude(index, registry, claudeTracker, item)),
-    vscode.commands.registerCommand(COMMAND.resumeFromArchive, () => cmdResumeFromArchive(index, registry, claudeTracker)),
+    vscode.commands.registerCommand(COMMAND.resumeFromArchive, () => cmdResumeFromArchive(ctx, index, registry, claudeTracker, searchIndex)),
+    // The old search button's command: the archive search does it all now.
+    vscode.commands.registerCommand(COMMAND.findSession, (args?: { query?: unknown; scope?: unknown }) =>
+      cmdResumeFromArchive(ctx, index, registry, claudeTracker, searchIndex, {
+        query: typeof args?.query === 'string' ? args.query : undefined,
+        scope: args?.scope === 'all' || args?.scope === 'ws' ? args.scope : undefined,
+      })),
+    vscode.commands.registerCommand(COMMAND.resumeConversationById, (args?: { id?: unknown; agent?: unknown }) =>
+      cmdResumeConversationById(index, registry, claudeTracker, searchIndex, args && typeof args === 'object' ? args : undefined)),
     vscode.commands.registerCommand(COMMAND.cleanupSessions, () => cmdCleanupSessions(index, registry)),
     vscode.commands.registerCommand(COMMAND.revealSessionFolder, (arg?: unknown) => cmdRevealSessionFolder(index, 'explorer', arg)),
     vscode.commands.registerCommand(COMMAND.revealSessionFolderFinder, (arg?: unknown) => cmdRevealSessionFolder(index, 'finder', arg)),
@@ -1316,40 +1328,6 @@ async function cmdFixClaudeMouseEnv(ctx: vscode.ExtensionContext): Promise<void>
   await maybeWarnMouseEnv(ctx, tmuxPath, { force: true });
 }
 
-async function cmdFindSession(index: SessionIndex, searchIndex: ClaudeSearchIndex): Promise<void> {
-  // Best-effort refresh in the background while the picker is open; re-render
-  // once it lands so a title renamed/cleared since the last scan shows fresh.
-  let disposed = false;
-  void searchIndex.refresh().then(n => { if (n > 0 && !disposed) render(qp.value); });
-  interface Pick extends vscode.QuickPickItem { entry: SessionIndexEntry }
-  const qp = vscode.window.createQuickPick<Pick>();
-  qp.placeholder = 'Search Claude sessions by prompt, cwd, or session id…';
-  qp.matchOnDescription = true;
-  qp.matchOnDetail = true;
-  const render = (q: string): void => {
-    const entries = q ? searchIndex.search(q, id => index.getSessionName(id)) : searchIndex.list();
-    qp.items = entries.slice(0, 100).map(e => ({
-      label: conversationTitle(
-        { sessionId: e.sessionId, customTitle: e.customTitle, autoTitle: e.aiTitle, firstUserMessage: e.title },
-        id => index.getSessionName(id),
-      ).title || '(no prompt)',
-      description: `${path.basename(e.cwd || '')} · ${e.turns} turns · ${humanAge(new Date(e.lastModified))}`,
-      detail: e.lastPrompt !== e.firstPrompt ? `last: ${e.lastPrompt}` : undefined,
-      entry: e,
-    }));
-  };
-  qp.onDidChangeValue(render);
-  render('');
-  qp.onDidAccept(async () => {
-    const sel = qp.selectedItems[0];
-    qp.hide();
-    if (!sel) return;
-    await openSessionActions(sel.entry);
-  });
-  qp.onDidHide(() => { disposed = true; qp.dispose(); });
-  qp.show();
-}
-
 /**
  * Filter the SIDEBAR sessions (live + stopped) by keyword — label, folder path,
  * group name, workspace — and jump to the picked one. Complements Find Session
@@ -1376,16 +1354,18 @@ async function cmdSearchSessions(
       ? index.getWorkspace(s.workspaceHash)?.groups?.[s.groupId]?.name
       : undefined;
     const state = s.stopped ? 'stopped' : s.attached ? 'attached' : 'detached';
+    const title = followedTitleFor(s.name);
+    const note = noteStore()?.get(s.workspaceHash, s.name)?.text;
     return {
-      label: `$(${s.stopped ? 'debug-stop' : s.icon || 'terminal'}) ${s.label || `#${s.tabId}`}`,
-      description: [s.workspaceLabel, groupName, state, `idle ${humanAge(s.lastAttached)}`]
+      label: `$(${s.stopped ? 'debug-stop' : s.icon || 'terminal'}) ${title || s.label || `#${s.tabId}`}`,
+      description: [title && s.label, s.workspaceLabel, groupName, state, `idle ${humanAge(s.lastAttached)}`]
         .filter(Boolean).join(' · '),
-      detail: s.folderPath || s.workspacePath,
+      detail: [s.folderPath || s.workspacePath, note?.replace(/\s+/g, ' ').trim().slice(0, 200)].filter(Boolean).join(' · '),
       session: s,
     };
   });
   const pick = await vscode.window.showQuickPick<Pick>(picks, {
-    placeHolder: 'Filter sessions by name, folder, group, or workspace…',
+    placeHolder: 'Filter sessions by name, title, folder, group, note, or workspace…',
     matchOnDescription: true,
     matchOnDetail: true,
   });
@@ -1410,7 +1390,7 @@ async function cmdSearchSessions(
  */
 function cmdFilterSessions(): void {
   const ib = vscode.window.createInputBox();
-  ib.placeholder = 'Filter sessions — name, folder, group, workspace (all words must match)';
+  ib.placeholder = 'Filter sessions — name, conversation title, folder, group, note, tag, workspace (all words must match)';
   ib.value = getSidebarTextFilter() ?? '';
   ib.prompt = 'The sidebar filters live as you type. The filter persists after closing — click the "Filter:" row to clear it.';
   ib.onDidChangeValue(v => setSidebarTextFilter(v));
@@ -1459,7 +1439,10 @@ async function cmdFixTranscriptCleanup(): Promise<void> {
   refreshSidebar();
 }
 
-async function openSessionActions(entry: SessionIndexEntry): Promise<void> {
+/** Open transcript / copy id / reveal folder for one conversation. */
+export async function openConversationActions(
+  entry: { sessionId: string; transcriptPath: string; cwd?: string; title?: string },
+): Promise<void> {
   const pick = await vscode.window.showQuickPick(
     [
       { label: '$(file-code) Open transcript file', action: 'open' as const },
@@ -2303,12 +2286,18 @@ async function cmdForkConversation(
   // Optional branch name (default "{origin} · fork N" within the origin's set).
   // The base label comes from the SET's origin (not this pane's label), so
   // forking a fork stays "{origin} · fork N" instead of nesting "· fork" suffixes.
-  const originLabel = src.label || `#${parsed.tabId}`;
+  // A session without a name of its own goes by its conversation's title.
+  const ownName = isTitlePinned(index.getSessionMeta(parsed.hash, src.name), ws.label) ? src.label : undefined;
+  const originLabel = ownName || followedTitleFor(src.name) || src.label || `#${parsed.tabId}`;
   const existingSetId = index.getSessionMeta(parsed.hash, src.name)?.branchSetId;
   const existingSet = existingSetId ? index.getBranchSet(parsed.hash, existingSetId) : undefined;
-  const baseLabel = existingSet
-    ? (existingSet.baseLabel ?? existingSet.name.replace(/\s*⑂\s*$/, ''))
-    : originLabel;
+  const stored = existingSet
+    ? (existingSet.customName ?? existingSet.baseLabel ?? existingSet.name.replace(/\s*⑂\s*$/, ''))
+    : undefined;
+  // A set whose origin had no name stores the default: the title says more.
+  const storedIsDefault = !existingSet?.customName && (stored === ws.label || /^#\d+$/.test(stored ?? ''));
+  const baseLabel = stored === undefined ? originLabel
+    : storedIsDefault ? (followedTitleFor(src.name) || stored) : stored;
   const memberCount = existingSetId ? index.branchSetMembers(parsed.hash, existingSetId).length : 1;
   const defaultName = `${baseLabel} · fork ${memberCount + 1}`;
   const input = await vscode.window.showInputBox({
@@ -2336,7 +2325,10 @@ async function cmdForkConversation(
     // and add the origin too.
     let setId = existingSetId;
     if (!setId) {
-      setId = index.createBranchSet(parsed.hash, `${baseLabel} ⑂`, baseLabel);
+      // An unnamed origin keeps its default as the set's base, so the group
+      // header goes on following the origin conversation's title.
+      const setBase = ownName || src.label || `#${parsed.tabId}`;
+      setId = index.createBranchSet(parsed.hash, `${setBase} ⑂`, setBase);
       if (setId) index.addSessionToBranchSet(parsed.hash, src.name, setId);
     }
     if (setId) index.addSessionToBranchSet(parsed.hash, newName, setId);
@@ -2365,6 +2357,26 @@ async function cmdForkConversation(
  * auto-dissolves when fewer than two members remain. Purely a metadata change —
  * the forked conversation is untouched (it was independent all along).
  */
+/** Name a fork group (the cluster row). Empty goes back to the automatic name:
+ *  the origin's own name, or its conversation's title when it had none. */
+async function cmdRenameForkGroup(index: SessionIndex, item?: BranchClusterItem): Promise<void> {
+  if (!item) {
+    vscode.window.showInformationMessage('Right-click a fork group row in the sidebar to rename it.');
+    return;
+  }
+  const current = index.getBranchSet(item.workspaceHash, item.branchSetId);
+  if (!current) return;
+  const shown = typeof item.label === 'string' ? item.label : item.label?.label;
+  const input = await vscode.window.showInputBox({
+    prompt: 'Name for this fork group (empty = automatic, from the conversation title)',
+    value: current.customName ?? shown ?? '',
+    ignoreFocusOut: true,
+  });
+  if (input === undefined) return;
+  index.setBranchSetCustomName(item.workspaceHash, item.branchSetId, input.trim() || undefined);
+  refreshSidebar();
+}
+
 async function cmdUnlinkBranch(index: SessionIndex, item?: SessionTreeItem): Promise<void> {
   const s = item?.session;
   if (!s?.branchSetId) {
@@ -2413,8 +2425,13 @@ async function cmdStop(
   const snap = claudeTracker.getSnapshot(name);
   if (isBusy(snap)) {
     const n = runningAgents(snap);
+    const sh = runningShells(snap);
+    const parts = [
+      n ? `${n} background agent${n === 1 ? '' : 's'}` : '',
+      sh ? `${sh} background shell${sh === 1 ? '' : 's'}` : '',
+    ].filter(Boolean).join(' and ');
     const why = agentsAtWork(snap)
-      ? `${n} background agent${n === 1 ? ' is' : 's are'} still running and will be stopped.`
+      ? `${parts} still running and will be stopped.`
       : 'Claude is currently working — its turn will be interrupted.';
     const confirm = await vscode.window.showWarningMessage(
       `Stop session ${labelDisplay}? ${why}`,
@@ -3263,96 +3280,156 @@ async function cmdMoveSessionToGroup(index: SessionIndex, item?: SessionTreeItem
 }
 
 /**
- * Resume ANY past session from disk (cross-agent) or restore a killed/stopped
- * Terminal Sessions pane. Scans every enabled provider's on-disk sessions
- * (default: the current workspace's cwd; a toggle widens to all projects),
- * enriches each row with the Terminal Sessions pane (live, stopped, or killed)
- * that ran it, and also lists killed/stopped panes whose transcripts aren't in
- * the scan so they remain searchable by session name. Each transcript row has
- * an eye button (View Conversation) and an edit button (Name Conversation).
+ * Search & Resume Conversations (the clock button): every past conversation on
+ * disk, for every enabled agent, plus stopped and killed sessions, newest
+ * first. Typing filters the list here (not VS Code's matcher): titles,
+ * folders, every prompt the user typed (search index), then what the agent
+ * answered (ripgrep). Each row says where it matched. Filters are title-bar
+ * buttons plus a Filters view inside the same picker; prefixes in the query
+ * (`@codex`, `7d`) narrow one search.
  */
+/** Archive search filters, remembered between opens. */
+/** `content`: also search inside conversations (what the user wrote, and
+ *  what the agent answered); off, only titles, session names and folders. */
+interface ArchiveFilters { scope: 'ws' | 'all'; content: boolean; agents: string[]; days: number; automated: boolean }
+const ARCHIVE_FILTERS_KEY = 'archive.filters.v2';
+const ARCHIVE_DAY_STEPS = [0, 1, 7, 30, 90];
+/** Thousands of rows make the picker slow to open and to filter. */
+const MAX_PICKER_ROWS = 500;
+/** Most transcript paths handed to ripgrep one by one. */
+const MAX_RG_FILES = 2000;
+
 async function cmdResumeFromArchive(
+  ctx: vscode.ExtensionContext,
   index: SessionIndex,
   registry: AgentRegistry,
   claudeTracker: ClaudeTracker,
+  searchIndex: ClaudeSearchIndex,
+  start: { query?: string; scope?: 'ws' | 'all' } = {},
 ): Promise<void> {
   const ws = currentWorkspace();
-  let scopeCwd: string | undefined = ws?.path;
+  const enabledIds = registry.enabled().map(p => p.id as string);
+  const saved = ctx.globalState.get<Partial<ArchiveFilters>>(ARCHIVE_FILTERS_KEY) ?? {};
+  const f: ArchiveFilters = {
+    scope: start.scope ?? saved.scope ?? 'ws',
+    content: saved.content ?? false,
+    agents: (saved.agents ?? enabledIds).filter(a => enabledIds.includes(a)),
+    days: saved.days ?? 0,
+    automated: saved.automated ?? false,
+  };
+  if (f.agents.length === 0) f.agents = enabledIds;
+  // All agents is saved as no list, so an agent enabled later is included.
+  const persist = (): void => {
+    const all = enabledIds.every(a => f.agents.includes(a));
+    void ctx.globalState.update(ARCHIVE_FILTERS_KEY, { ...f, agents: all ? undefined : f.agents });
+  };
+  const resetFilters = (): void => {
+    f.scope = 'ws'; f.content = false; f.agents = enabledIds.slice(); f.days = 0; f.automated = false;
+  };
+  const nameLookup = (id: string): string | undefined => index.getSessionName(id);
+  const agentName = (id: string): string => registry.getProvider(id as AgentId)?.displayName ?? id;
 
-  const eyeBtn: vscode.QuickInputButton = { iconPath: new vscode.ThemeIcon('book'), tooltip: 'View Conversation' };
-  const editBtn: vscode.QuickInputButton = { iconPath: new vscode.ThemeIcon('edit'), tooltip: 'Rename Conversation' };
+  const eyeBtn: vscode.QuickInputButton = {
+    iconPath: new vscode.ThemeIcon('book'),
+    tooltip: 'Read this conversation: opens it as a document, nothing is resumed',
+  };
+  const editBtn: vscode.QuickInputButton = {
+    iconPath: new vscode.ThemeIcon('edit'),
+    tooltip: 'Rename this conversation (the name shows here and in the sidebar)',
+  };
 
+  type FilterAction = 'back' | 'content' | 'agent' | 'days' | 'automated' | 'reset';
   interface Pick extends vscode.QuickPickItem {
     sess?: ArchivedSession;
     linked?: LinkedTerminalSession;
-    toggle?: boolean;
+    /** Lower-cased text the row matches on besides the index (label, folder…). */
+    hay?: string;
+    /** "Nothing here: widen the search" row. */
+    widen?: boolean;
+    /** The "Filters: …" row on top of an empty search. */
+    filtersRow?: boolean;
+    filter?: { action: FilterAction; value?: string | number };
   }
 
   const formatAge = (ms: number): string => {
     const ageMin = Math.max(0, Math.round((Date.now() - ms) / 60000));
     return ageMin < 60 ? `${ageMin}m` : ageMin < 60 * 24 ? `${Math.round(ageMin / 60)}h` : `${Math.round(ageMin / 60 / 24)}d`;
   };
+  const plain = (s: string | undefined): string => (s ?? '').replace(/\$\([^)]*\)\s*/g, '').toLowerCase();
 
-  const build = (): Pick[] => {
-    const sessions = scanArchive(registry.enabled(), (id) => index.getSessionName(id), scopeCwd);
+  /** "Live · 2026.Q4 #316": the session that runs it, short. An earlier
+   *  conversation of that session reads "earlier in 2026.Q4 #316": the
+   *  session's status is not this conversation's. */
+  const sessionRef = (l: LinkedTerminalSession): string => {
+    const tab = parseSessionName(l.sessionName, getConfig().sessionPrefix)?.tabId;
+    const where = `${l.workspaceLabel}${tab !== undefined ? ` #${tab}` : ''}`;
+    if (!l.isHead) return `earlier in ${where}`;
+    const status = l.status === 'killed' ? 'Killed' : l.status === 'stopped' ? 'Stopped' : 'Live';
+    return `${status} · ${where}`;
+  };
+
+  /** One conversation row, one line: title, then status · session · agent ·
+   *  age. Everything else (folder, tab, first prompt, id) is only matched on.
+   *  `answerOnly`: found only in the agent's answers. */
+  const rowFor = (s: ArchivedSession, linked: LinkedTerminalSession | undefined, answerOnly = false): Pick => {
+    const primary = conversationTitle(s, nameLookup).title || '(no user message)';
+    const tsLabel = linked ? (linked.label || linked.tabName || linked.sessionName) : undefined;
+    const head = linked?.isHead ? linked : undefined;
+    const icon = answerOnly ? 'hubot'
+      : head?.status === 'killed' ? 'history'
+      : head?.status === 'stopped' ? 'debug-stop'
+      : 'comment-discussion';
+    const row: Pick = {
+      sess: s,
+      linked,
+      label: `$(${icon}) ${primary}`,
+      description: [linked && sessionRef(linked), agentName(s.agent), formatAge(s.mtimeMs ?? Date.now())]
+        .filter(Boolean).join(' · '),
+      buttons: [eyeBtn, editBtn],
+      alwaysShow: true,
+    };
+    row.hay = [primary, tsLabel, linked?.tabName, s.cwd, s.sessionId, row.description]
+      .filter(Boolean).join(' ').toLowerCase();
+    return row;
+  };
+
+  const build = (agents: readonly string[], days: number): Pick[] => {
+    const scopeCwd = f.scope === 'ws' ? ws?.path : undefined;
+    const cutoff = cutoffFor(days);
+    const providers = registry.enabled().filter(p => agents.includes(p.id));
+    // Claude conversations come from the search index: reading every
+    // transcript here took seconds per open (GBs). While it is first built,
+    // what it has so far (the picker fills in when it is done); with nothing
+    // indexed yet, the transcripts themselves.
+    const useIndex = providers.some(p => p.id === 'claude')
+      && (searchIndex.isComplete() || searchIndex.list().length > 0);
+    const sessions = scanArchive(useIndex ? providers.filter(p => p.id !== 'claude') : providers, nameLookup, scopeCwd);
+    if (useIndex) {
+      for (const e of searchIndex.listScope(scopeCwd)) {
+        if (!e.subsessionRole) sessions.push(archivedFromEntry(e, nameLookup));
+      }
+    }
+    sessions.sort((a, b) => (b.mtimeMs ?? 0) - (a.mtimeMs ?? 0));
     const { byConversationId, allLinkedSessions } = buildSessionConversationIndex(index.getAllWorkspaces());
     const coveredSessionKeys = new Set<string>();
-
-    const rows: Pick[] = sessions.slice(0, 500).map(s => {
-      const provider = registry.getProvider(s.agent);
-      const badge = provider?.displayName || s.agent;
-      const titleInfo = conversationTitle(s, id => index.getSessionName(id));
-      const primary = titleInfo.title || '(no user message)';
-      const lines = (s.lineCount ?? 0).toLocaleString();
-      const ageStr = formatAge(s.mtimeMs ?? Date.now());
-      const cwdShort = s.cwd ? s.cwd.replace(/^\/Users\/[^/]+\//, '~/') : '?';
+    const rows: Pick[] = [];
+    for (const s of sessions) {
+      if ((s.mtimeMs ?? 0) < cutoff) continue;
       const linked = byConversationId.get(s.sessionId);
+      // Runs started by tools (claude -p, codex exec, delegated reviews) are
+      // not the user's conversations, unless it is what one of their sessions
+      // runs. Antigravity writes no mark that tells a delegated (`agy -p`)
+      // run from one typed in, and nearly all are delegated: only those of a
+      // session that runs Antigravity count as the user's.
+      const agyRun = s.agent === 'agy' && !(linked && (linked.isHead || linked.headAgent === 'agy'));
+      if ((s.automated || agyRun) && !f.automated && !linked?.isHead) continue;
       if (linked) coveredSessionKeys.add(`${linked.status}:${linked.workspaceHash}:${linked.sessionName}:${linked.killedAt ?? ''}`);
-
-      const tsLabel = linked ? (linked.label || linked.tabName || linked.sessionName) : undefined;
-      const statusBadge = linked
-        ? (linked.status === 'killed'
-          ? `[Killed${linked.killedAt ? ' ' + formatAge(new Date(linked.killedAt).getTime()) + ' ago' : ''}]`
-          : linked.status === 'stopped' ? '[Stopped]' : '[Live]')
-        : undefined;
-      const icon = linked?.status === 'killed' ? 'history'
-        : linked?.status === 'stopped' ? 'debug-stop'
-        : 'comment-discussion';
-
-      // Show session name prominently when it differs from the conversation title.
-      const labelText = tsLabel && tsLabel.toLowerCase() !== primary.toLowerCase()
-        ? `${tsLabel} · ${primary}`
-        : primary;
-      const descParts = [
-        statusBadge,
-        badge,
-        `${lines} lines`,
-        `${ageStr} ago`,
-        s.sessionId.slice(0, 8),
-      ].filter(Boolean);
-
-      // Include firstUserMessage snippet in detail when the title came from a
-      // custom/auto rename so the user sees what was discussed and can search it.
-      const promptPreview = s.firstUserMessage?.replace(/\s+/g, ' ').trim().slice(0, 120);
-      const detailParts = [cwdShort];
-      if (tsLabel && linked?.tabName && linked.tabName !== tsLabel) detailParts.push(linked.tabName);
-      if (promptPreview && promptPreview.toLowerCase() !== primary.toLowerCase()) {
-        detailParts.push(`"${promptPreview}"`);
-      }
-
-      return {
-        sess: s,
-        linked,
-        label: `$(${icon}) ${labelText}`,
-        description: descParts.join(' · '),
-        detail: detailParts.join(' · '),
-        buttons: [eyeBtn, editBtn],
-      };
-    });
+      rows.push(rowFor(s, linked));
+    }
 
     // Also surface Killed / Stopped sessions that had no matching transcript in
     // the scan (e.g. shell-only sessions or transcripts pruned/outside scope)
-    // so searching by session name in $(history) always finds and restores them.
+    // so searching by session name always finds and restores them.
     for (const linked of allLinkedSessions) {
       if (linked.status === 'live') continue;
       if (scopeCwd && linked.workspacePath !== scopeCwd && linked.folderPath !== scopeCwd) continue;
@@ -3362,43 +3439,256 @@ async function cmdResumeFromArchive(
       const tsMs = linked.killedAt ? new Date(linked.killedAt).getTime()
         : linked.stoppedAt ? new Date(linked.stoppedAt).getTime()
         : Date.now();
-      const statusBadge = linked.status === 'killed'
-        ? `[Killed ${formatAge(tsMs)} ago]`
-        : '[Stopped]';
+      if (tsMs < cutoff) continue;
       const icon = linked.status === 'killed' ? 'history' : 'debug-stop';
       const cwd = linked.folderPath || linked.workspacePath;
-      const cwdShort = cwd ? cwd.replace(/^\/Users\/[^/]+\//, '~/') : '?';
-      rows.push({
+      const row: Pick = {
         linked,
         label: `$(${icon}) ${tsLabel}`,
-        description: `${statusBadge} · ${linked.workspaceLabel} · ${linked.sessionName}`,
-        detail: cwdShort,
-      });
+        description: `${sessionRef(linked)} · ${formatAge(tsMs)}`,
+        alwaysShow: true,
+      };
+      row.hay = [tsLabel, linked.sessionName, cwd, row.description].filter(Boolean).join(' ').toLowerCase();
+      rows.push(row);
     }
-
-    const toggle: Pick = {
-      toggle: true,
-      label: scopeCwd ? '$(globe) Show sessions from all projects...' : '$(home) Show only this workspace',
-      alwaysShow: true,
-    };
-    return [toggle, ...rows];
+    return rows;
   };
 
   const qp = vscode.window.createQuickPick<Pick>();
+  qp.value = start.query ?? '';
+  // We filter and order the rows ourselves; VS Code's matcher would hide rows
+  // that matched in a prompt or an answer, and re-sort the rest.
   qp.matchOnDescription = true;
   qp.matchOnDetail = true;
-  // Keep the picker open when a row button (View / Name) opens another UI —
-  // otherwise the focus change hides it and the user must re-run the command and
-  // scroll back, defeating the browse-then-resume flow the buttons exist for.
+  qp.keepScrollPosition = true;
+  try { (qp as unknown as { sortByLabel: boolean }).sortByLabel = false; } catch { /* not available to extensions */ }
+  // Keep the picker open when a row button (View / Name) opens another UI.
   qp.ignoreFocusOut = true;
-  const refresh = () => {
-    qp.placeholder = scopeCwd
-      ? `Search & resume sessions or killed tabs (this workspace${ws?.label ? ' — ' + ws.label : ''})`
-      : 'Search & resume sessions or killed tabs (all projects)';
-    qp.items = build();
-  };
-  refresh();
 
+  let mode: 'results' | 'filters' = 'results';
+  let savedQuery = '';
+  const restrictive = (): boolean => f.agents.length < enabledIds.length || f.days > 0;
+  const daysText = (d: number): string => (d ? (d === 1 ? 'last day' : `last ${d} days`) : 'any time');
+  const agentsText = (a: readonly string[]): string => (a.length === enabledIds.length ? 'all agents' : a.map(agentName).join(', '));
+
+  // The title is the filter state, short enough not to be cut off.
+  const paintChrome = (agents: readonly string[], days: number): void => {
+    if (mode === 'filters') {
+      qp.title = 'Filters · Enter toggles · Back returns to the results';
+      qp.placeholder = '';
+      qp.buttons = [vscode.QuickInputButtons.Back];
+      return;
+    }
+    qp.title = `${f.scope === 'ws' ? 'This workspace' : 'All projects'} · `
+      + `${f.content ? 'titles + inside conversations' : 'titles only'} · ${agentsText(agents)} · ${daysText(days)}`
+      + (f.automated ? ' · + runs made by agents' : '');
+    qp.placeholder = !searchIndex.isComplete()
+      ? 'Indexing conversations… the list fills in when done. Enter resumes.'
+      : f.content
+        ? 'Search titles and inside conversations (try @codex, 7d). Enter resumes.'
+        : 'Search titles, session names and folders (try @codex, 7d). Enter resumes.';
+    qp.buttons = [
+      { iconPath: new vscode.ThemeIcon(f.scope === 'ws' ? 'home' : 'globe'),
+        tooltip: f.scope === 'ws'
+          ? `Where: only this workspace${ws?.label ? ` (${ws.label})` : ''}. Click to search all projects on this computer.`
+          : 'Where: all projects on this computer. Click to search only this workspace.' },
+      { iconPath: new vscode.ThemeIcon(f.content ? 'comment-discussion' : 'comment'),
+        tooltip: f.content
+          ? "Inside conversations: ON. Claude conversations are also searched by what you wrote and what Claude answered (answers from 3 letters; files it read are ignored). Click to search only titles, session names and folders."
+          : 'Inside conversations: OFF. Searches only titles, session names and folders. Click to also search what you wrote and what Claude answered, in Claude conversations.' },
+      { iconPath: new vscode.ThemeIcon(restrictive() ? 'filter-filled' : 'filter'),
+        tooltip: `Filters: ${agentsText(f.agents)}, ${daysText(f.days)}. Click to choose agents and time, or reset everything.` },
+    ];
+  };
+
+  const filterItems = (): Pick[] => {
+    const on = (b: boolean): string => (b ? '$(check)' : '$(circle-large-outline)');
+    return [
+      { label: '$(arrow-left) Back to the results', filter: { action: 'back' }, alwaysShow: true },
+      { label: 'Search', kind: vscode.QuickPickItemKind.Separator },
+      { label: `${on(f.content)} Search inside conversations`,
+        description: 'Claude conversations: what you wrote and what Claude answered',
+        filter: { action: 'content' }, alwaysShow: true },
+      { label: 'Agents', kind: vscode.QuickPickItemKind.Separator },
+      ...registry.enabled().map((p): Pick => ({
+        label: `${on(f.agents.includes(p.id))} ${p.displayName}`,
+        description: f.agents.includes(p.id) ? 'listed' : 'hidden',
+        filter: { action: 'agent', value: p.id },
+        alwaysShow: true,
+      })),
+      { label: 'Time', kind: vscode.QuickPickItemKind.Separator },
+      ...ARCHIVE_DAY_STEPS.map((d): Pick => ({
+        label: `${f.days === d ? '$(pass-filled)' : '$(circle-large-outline)'} ${d ? `Last ${d === 1 ? 'day' : `${d} days`}` : 'Any time'}`,
+        filter: { action: 'days', value: d },
+        alwaysShow: true,
+      })),
+      { label: 'Other', kind: vscode.QuickPickItemKind.Separator },
+      { label: `${on(f.automated)} Also search runs made by agents`,
+        description: 'delegated reviews (Codex, Grok, Antigravity), claude -p, codex exec',
+        filter: { action: 'automated' }, alwaysShow: true },
+      { label: '', kind: vscode.QuickPickItemKind.Separator },
+      { label: '$(discard) Reset all filters', description: 'this workspace, titles only, all agents, any time, only your conversations',
+        filter: { action: 'reset' }, alwaysShow: true },
+    ];
+  };
+
+  // Results: rows matched by the index (any prompt), by their own text, then
+  // by the agent's answers (a moment later). Each says where it matched.
+  let base: Pick[] = [];
+  let baseKey = '';
+  let gen = 0;
+  let answerTimer: NodeJS.Timeout | undefined;
+  let open = true;
+  const showResults = (): void => {
+    if (mode !== 'results') return;
+    const myGen = ++gen;
+    if (answerTimer) clearTimeout(answerTimer);
+    qp.busy = false;
+    const parsed = parseArchiveQuery(qp.value, enabledIds);
+    const agents = parsed.agents ?? f.agents;
+    const days = parsed.days ?? f.days;
+    paintChrome(agents, days);
+    const key = `${f.scope}|${agents.join(',')}|${days}|${f.automated}`;
+    if (key !== baseKey) { base = build(agents, days); baseKey = key; }
+    const q = parsed.text.trim();
+    if (!q) {
+      // The filters in words, on top: the title-bar icons alone are easy to miss.
+      const filtersRow: Pick = {
+        label: `$(settings-gear) Filters: ${f.scope === 'ws' ? 'this workspace' : 'all projects'}, `
+          + `${f.content ? 'titles + inside conversations' : 'titles only'}, ${agentsText(agents)}, ${daysText(days)}, `
+          + `${f.automated ? 'with runs made by agents' : 'only your conversations'}`,
+        description: 'click to change',
+        filtersRow: true,
+        alwaysShow: true,
+      };
+      qp.items = [filtersRow, ...(base.length ? capped(base) : [widenRow(agents, days)])];
+      // Enter resumes the newest conversation, not opens the Filters.
+      if (base.length) qp.activeItems = [qp.items[1]];
+      return;
+    }
+
+    const tokens = q.toLowerCase().split(/\s+/).filter(Boolean);
+    const hits = new Map<string, SessionIndexEntry>();
+    if (f.content) for (const e of searchIndex.search(q, nameLookup)) hits.set(e.sessionId, e);
+    // Order: a title that matches first, then the user's own sessions (ones
+    // the sidebar knows), then matches in a prompt; newest first within each.
+    const ranked: Array<{ row: Pick; tier: number; i: number }> = [];
+    base.forEach((r, i) => {
+      const e = r.sess && hits.get(r.sess.sessionId);
+      const own = tokens.every(t => (r.hay ?? '').includes(t));
+      if (!e && !own) return;
+      const titleHit = tokens.every(t => plain(r.label).includes(t));
+      const snip = e ? promptSnippet(e, q) : undefined;
+      const row = snip && !titleHit ? { ...r, detail: `you: "${snip}"` } : r;
+      ranked.push({ row, tier: (titleHit ? 0 : 2) + (r.linked?.isHead ? 0 : 1), i });
+    });
+    ranked.sort((a, b) => a.tier - b.tier || a.i - b.i);
+    const mine = capped(ranked.map(x => x.row));
+    qp.items = mine.length ? mine : [];
+    const wantAnswers = f.content && agents.includes('claude')
+      && tokens.some(t => t.length >= MIN_ANSWER_QUERY) && Boolean(findRipgrep(vscode.env.appRoot));
+    if (!wantAnswers) { if (!mine.length) qp.items = [widenRow(agents, days)]; return; }
+    qp.busy = true;
+    answerTimer = setTimeout(() => void (async () => {
+      const rg = findRipgrep(vscode.env.appRoot)!;
+      const scopeCwd = f.scope === 'ws' ? ws?.path : undefined;
+      const cutoff = cutoffFor(days);
+      const dirs = searchDirs(scopeCwd, slugFromCwd);
+      // Listing files keeps old matches from using up the hit limit; past a
+      // few thousand the command line gets too long, and `eligible` drops old
+      // ones anyway.
+      const recent = cutoff ? recentTranscripts(dirs, cutoff) : [];
+      const targets = cutoff && recent.length <= MAX_RG_FILES ? recent : dirs;
+      const eligible = (id: string, mtimeMs: number): boolean => {
+        if (mtimeMs < cutoff) return false;
+        const e = searchIndex.entryById(id);
+        // One the finished index does not list was dropped as empty; while it
+        // is being built, one it has not reached yet still counts.
+        if (!e) return !searchIndex.isComplete();
+        if (e.subsessionRole) return false;
+        return f.automated || !e.entrypoint?.startsWith('sdk');
+      };
+      const found = await deepSearch(rg, targets, q, () => myGen !== gen || !open, eligible);
+      if (myGen !== gen || !open || mode !== 'results') return;
+      qp.busy = false;
+      const inMine = new Map(mine.map((r, i) => [r.sess?.sessionId, i] as const));
+      const updated = mine.slice();
+      const answerRows: Pick[] = [];
+      const byBase = new Map(base.map(r => [r.sess?.sessionId, r] as const));
+      const { byConversationId } = buildSessionConversationIndex(index.getAllWorkspaces());
+      for (const h of found) {
+        const i = inMine.get(h.sessionId);
+        if (i !== undefined) {
+          if (!updated[i].detail) updated[i] = { ...updated[i], detail: `agent: "${h.snippet}"` };
+          continue;
+        }
+        // Not matched in the user's text: its own section, robot icon.
+        const known = byBase.get(h.sessionId)?.sess;
+        const e = searchIndex.entry(h.transcriptPath);
+        const s: ArchivedSession = known ?? (e ? archivedFromEntry(e, nameLookup) : {
+          agent: 'claude', sessionId: h.sessionId, transcriptPath: h.transcriptPath,
+          cwd: readTranscriptCwd(h.transcriptPath), mtimeMs: h.mtimeMs, friendlyName: nameLookup(h.sessionId),
+        });
+        const row = rowFor(s, byConversationId.get(s.sessionId), true);
+        answerRows.push({ ...row, detail: `agent: "${h.snippet}"` });
+      }
+      const sep: Pick[] = answerRows.length
+        ? [{ label: "Found only in the agent's answers", kind: vscode.QuickPickItemKind.Separator }] : [];
+      const all = [...updated, ...sep, ...answerRows];
+      qp.items = all.length ? all : [widenRow(agents, days)];
+    })(), 300);
+  };
+  /** The picker draws every row it gets: the newest MAX_PICKER_ROWS, then a
+   *  line saying how many more a narrower search would reach. */
+  const capped = (rows: Pick[]): Pick[] => {
+    if (rows.length <= MAX_PICKER_ROWS) return rows;
+    return [...rows.slice(0, MAX_PICKER_ROWS), {
+      label: `$(info) ${rows.length - MAX_PICKER_ROWS} older conversations not shown`,
+      description: 'type more of the title, or narrow the time or agents',
+      alwaysShow: true,
+    }];
+  };
+  /** Shown instead of an empty list: one step to search everywhere, any time. */
+  const widenRow = (agents: readonly string[], days: number): Pick => {
+    const narrow = f.scope === 'ws' || days > 0 || agents.length < enabledIds.length;
+    return {
+      label: narrow ? '$(search) Nothing here. Search all projects, all agents, any time' : '$(info) No conversation matches',
+      description: narrow ? `now: ${f.scope === 'ws' ? 'this workspace' : 'all projects'}, ${agentsText(agents)}, ${daysText(days)}` : undefined,
+      widen: narrow,
+      alwaysShow: true,
+    };
+  };
+  const showFilters = (): void => {
+    paintChrome(f.agents, f.days);
+    qp.items = filterItems();
+  };
+  const enterFilters = (): void => {
+    mode = 'filters';
+    savedQuery = qp.value;
+    qp.value = '';
+    showFilters();
+  };
+  const leaveFilters = (): void => {
+    mode = 'results';
+    persist();
+    baseKey = '';
+    qp.value = savedQuery;
+    showResults();
+  };
+
+  showResults();
+  let queryTimer: NodeJS.Timeout | undefined;
+  qp.onDidChangeValue(() => {
+    if (mode !== 'results') return;
+    if (queryTimer) clearTimeout(queryTimer);
+    queryTimer = setTimeout(showResults, 150);
+  });
+  const wasComplete = searchIndex.isComplete();
+  void searchIndex.refresh().then(n => {
+    if (open && (n > 0 || !wasComplete)) { baseKey = ''; showResults(); }
+  });
+
+  let renaming = false;
   const chosen = await new Promise<Pick | undefined>((resolve) => {
     let resolved = false;
     const finish = (v: Pick | undefined) => {
@@ -3406,29 +3696,78 @@ async function cmdResumeFromArchive(
       resolved = true;
       resolve(v);
     };
+    qp.onDidTriggerButton(b => {
+      if (b === vscode.QuickInputButtons.Back) { leaveFilters(); return; }
+      const i = qp.buttons.indexOf(b);
+      if (i === 0) f.scope = f.scope === 'ws' ? 'all' : 'ws';
+      else if (i === 1) f.content = !f.content;
+      else if (i === 2) { enterFilters(); return; }
+      persist();
+      baseKey = '';
+      showResults();
+    });
     qp.onDidTriggerItemButton(async (e) => {
       const s = e.item.sess;
       if (!s || !s.transcriptPath) return;
       if (e.button === eyeBtn) {
-        await vscode.commands.executeCommand(COMMAND.viewConversation, { transcriptPath: s.transcriptPath, title: conversationTitle(s, id => index.getSessionName(id)).title });
+        await vscode.commands.executeCommand(COMMAND.viewConversation, { transcriptPath: s.transcriptPath, title: conversationTitle(s, nameLookup).title });
       } else if (e.button === editBtn) {
-        const name = await vscode.commands.executeCommand<string | undefined>(COMMAND.nameSession, {
-          sessionId: s.sessionId,
-          current: conversationTitle(s, id => index.getSessionName(id), 200).title,
-          transcriptPath: s.transcriptPath,
-          agent: s.agent,
-        });
-        if (name !== undefined) refresh();
+        // The name box takes the picker's place (only one shows at a time):
+        // its hiding is not the user closing the picker, and it comes back.
+        renaming = true;
+        try {
+          await vscode.commands.executeCommand<string | undefined>(COMMAND.nameSession, {
+            sessionId: s.sessionId,
+            current: conversationTitle(s, nameLookup, 200).title,
+            transcriptPath: s.transcriptPath,
+            agent: s.agent,
+          });
+        } finally { renaming = false; }
+        if (resolved) return;
+        // Renamed, cleared or cancelled: re-read the index so the row shows it.
+        await searchIndex.refresh();
+        baseKey = '';
+        showResults();
+        qp.show();
       }
     });
     qp.onDidAccept(() => {
       const sel = qp.selectedItems[0];
-      if (sel?.toggle) { scopeCwd = scopeCwd ? undefined : ws?.path; refresh(); return; }
+      if (!sel) return;
+      if (mode === 'filters' && sel.filter) {
+        const { action, value } = sel.filter;
+        if (action === 'back') { leaveFilters(); return; }
+        if (action === 'agent' && typeof value === 'string') {
+          f.agents = f.agents.includes(value) ? f.agents.filter(a => a !== value) : [...f.agents, value];
+          if (f.agents.length === 0) f.agents = [value];
+        } else if (action === 'days' && typeof value === 'number') f.days = value;
+        else if (action === 'automated') f.automated = !f.automated;
+        else if (action === 'content') f.content = !f.content;
+        else if (action === 'reset') resetFilters();
+        const at = qp.items.indexOf(sel);
+        showFilters();
+        const again = qp.items[at];
+        if (again) qp.activeItems = [again];
+        return;
+      }
+      if (sel.filtersRow) { enterFilters(); return; }
+      if (sel.widen) {
+        f.scope = 'all'; f.days = 0; f.agents = enabledIds.slice(); persist(); baseKey = '';
+        // `@codex` or `7d` typed in the query would narrow it again.
+        qp.value = parseArchiveQuery(qp.value, enabledIds).text;
+        showResults();
+        return;
+      }
+      if (!sel.sess && !sel.linked) return;
       finish(sel);
     });
-    qp.onDidHide(() => finish(undefined));
+    qp.onDidHide(() => { if (!renaming) finish(undefined); });
     qp.show();
   });
+  open = false;
+  if (queryTimer) clearTimeout(queryTimer);
+  if (answerTimer) clearTimeout(answerTimer);
+  persist(); // a choice made in Filters and closed with Esc still counts
   qp.hide();
   qp.dispose();
   if (!chosen) return;
@@ -3455,13 +3794,44 @@ async function cmdResumeFromArchive(
     return;
   }
 
+  await openArchivedConversation(index, registry, claudeTracker, s, linked);
+}
+
+/**
+ * Resume one past conversation: restore its killed session, start or switch to
+ * the session that ran it, or open it in a new session. The archive picker and
+ * "Resume Conversation by ID" (links from search tools) both land here.
+ * A conversation already running in its own pane is just brought to the front.
+ * Otherwise `confirm` always asks where to resume, even when there is one
+ * choice: a link can come from anywhere and must never start an agent by itself.
+ */
+export async function openArchivedConversation(
+  index: SessionIndex,
+  registry: AgentRegistry,
+  claudeTracker: ClaudeTracker,
+  s: ArchivedSession,
+  linked: LinkedTerminalSession | undefined,
+  opts: { confirm?: boolean } = {},
+): Promise<void> {
   if (!s.transcriptPath) return;
   const provider = registry.getProvider(s.agent);
   if (!provider) return;
+  const ws = currentWorkspace();
 
   const tmuxPath = await requireTmux();
   if (!tmuxPath) return;
   const cfg = getConfig();
+
+  // Already running in its own pane: just bring it to the front. The agent
+  // must still be up: a pane whose agent exited keeps the id but needs a resume.
+  const linkedSnap = linked?.status === 'live' ? claudeTracker.getSnapshot(linked.sessionName) : undefined;
+  if (linked && linkedSnap && linkedSnap.state !== 'none' && linkedSnap.sessionId === s.sessionId
+    && await tmux.hasSession(tmuxPath, linked.sessionName)) {
+    await revealSessionInSidebar(linked.sessionName, true);
+    await openTerminalForSession(linked.sessionName, undefined, index);
+    refreshSidebar();
+    return;
+  }
 
   const active = vscode.window.activeTerminal;
   const activeName = active ? await resolveTmuxNameForTerminalLive(active, index, cfg.sessionPrefix) : undefined;
@@ -3480,10 +3850,13 @@ async function cmdResumeFromArchive(
       description: 'Reopen with original name, icon, color and folder',
     });
   } else if (linked && (linked.status === 'stopped' || linked.status === 'live')) {
+    const running = linked.status === 'live' ? claudeTracker.getSnapshot(linked.sessionName) : undefined;
+    const replaces = Boolean(running && running.state !== 'none' && running.sessionId !== s.sessionId);
     actions.push({
       action: 'openExisting',
       label: `$(${linked.status === 'stopped' ? 'play' : 'terminal'}) ${linked.status === 'stopped' ? 'Start' : 'Open'} session "${linkedTitle}" & resume`,
-      description: linked.status === 'stopped' ? 'Start stopped session in sidebar' : 'Switch to existing session',
+      description: linked.status === 'stopped' ? 'Start stopped session in sidebar'
+        : replaces ? 'Replaces the conversation running there now' : 'Switch to existing session',
     });
   }
   actions.push({
@@ -3492,10 +3865,13 @@ async function cmdResumeFromArchive(
     description: 'Create a new persistent terminal tab with this conversation title',
   });
   // A parked tab only runs its placeholder: typing a resume there does nothing.
+  // A tab with an agent running would take the command as a prompt.
   const activeParsed = activeName ? parseSessionName(activeName, cfg.sessionPrefix) : undefined;
   const activeMeta = activeParsed ? index.getSessionMeta(activeParsed.hash, activeName!) : undefined;
   const activeParked = Boolean(activeMeta?.stopped && activeMeta?.parked);
-  if (active && activeName && !activeParked) {
+  const activeSnap = activeName ? claudeTracker.getSnapshot(activeName) : undefined;
+  const activeBusy = Boolean(activeSnap && activeSnap.state !== 'none');
+  if (active && activeName && !activeParked && !activeBusy) {
     actions.push({
       action: 'active',
       label: '$(terminal) Resume inside current active terminal',
@@ -3504,11 +3880,13 @@ async function cmdResumeFromArchive(
   }
 
   let chosenAction: TargetAction;
-  if (actions.length === 1) {
+  if (actions.length === 1 && !opts.confirm) {
     chosenAction = actions[0].action;
   } else {
     const pick = await vscode.window.showQuickPick<ActionPick>(actions, {
-      placeHolder: 'Where should this conversation resume?',
+      placeHolder: opts.confirm && convTitle
+        ? `Where should "${convTitle}" resume?`
+        : 'Where should this conversation resume?',
     });
     if (!pick) return;
     chosenAction = pick.action;
@@ -3631,6 +4009,114 @@ async function cmdResumeFromArchive(
     claudeTracker.reserveResume(s.sessionId, name);
     const flags = index.getResumeFlags(ws.hash, name, provider.id);
     term.sendText(buildResumeCommand(provider, s.sessionId, s.transcriptPath, newCwd, flags));
+  }
+}
+
+/**
+ * Locate one conversation on disk by id, in the agent's own storage only.
+ * Claude is looked up by file name across project dirs (never by reading
+ * transcripts); other agents use their resolver, then their session list.
+ */
+export function findArchivedConversation(
+  index: SessionIndex,
+  registry: AgentRegistry,
+  id: string,
+  agent?: AgentId,
+  searchIndex?: ClaudeSearchIndex,
+): ArchivedSession | undefined {
+  for (const p of registry.enabled()) {
+    if ((agent && p.id !== agent) || !p.isValidSessionId(id)) continue;
+    const tp = p.id === 'claude' ? findTranscriptBySessionId('', id) : p.resolveTranscriptPath(id, '', undefined);
+    if (tp && fs.existsSync(tp)) {
+      // Claude: the index already has it, no need to read a big transcript.
+      const indexed = p.id === 'claude' ? searchIndex?.entry(tp) : undefined;
+      if (indexed) return archivedFromEntry(indexed, sid => index.getSessionName(sid));
+      const sum = p.readTranscriptSummary?.(tp);
+      // Some agents keep the folder in their session list, not the transcript.
+      let cwd = sum?.cwd;
+      if (!cwd && p.id !== 'claude') {
+        try { cwd = p.listSessions().find(x => x.sessionId === id)?.cwd; } catch { /* no list */ }
+      }
+      return {
+        agent: p.id,
+        sessionId: id,
+        transcriptPath: tp,
+        cwd,
+        firstUserMessage: sum?.firstUserMessage,
+        customTitle: sum?.customTitle,
+        autoTitle: sum?.autoTitle,
+        lineCount: sum?.lineCount,
+        byteSize: sum?.byteSize,
+        mtimeMs: sum?.mtimeMs,
+        friendlyName: index.getSessionName(id),
+      };
+    }
+    if (p.id === 'claude') continue;
+    try {
+      const hit = p.listSessions().find(x => x.sessionId === id);
+      if (hit?.transcriptPath) return { ...hit, friendlyName: index.getSessionName(id) };
+    } catch { /* unreadable store: try the next agent */ }
+  }
+  return undefined;
+}
+
+const resumesInFlight = new Set<string>();
+
+/**
+ * "Resume Conversation by ID": the entry point for links printed by search
+ * tools (`<scheme>://visul.terminal-sessions/resume?agent=claude&id=<id>`) and
+ * for a pasted id. Only an agent name and an id are accepted; the folder,
+ * flags and transcript all come from the agent's own storage, and the user
+ * always picks where it resumes.
+ */
+async function cmdResumeConversationById(
+  index: SessionIndex,
+  registry: AgentRegistry,
+  claudeTracker: ClaudeTracker,
+  searchIndex: ClaudeSearchIndex,
+  args?: { id?: unknown; agent?: unknown },
+): Promise<void> {
+  if (!vscode.workspace.isTrusted) {
+    vscode.window.showWarningMessage('Resume Conversation by ID is disabled in an untrusted workspace.');
+    return;
+  }
+  let id = typeof args?.id === 'string' ? args.id.trim() : '';
+  if (!id) {
+    id = (await vscode.window.showInputBox({
+      prompt: 'Conversation ID to resume',
+      placeHolder: 'e.g. 01f3cfc5-fd36-4aee-b644-de80ab512859',
+      ignoreFocusOut: true,
+    }))?.trim() ?? '';
+    if (!id) return;
+  }
+  const agentArg = typeof args?.agent === 'string' ? args.agent.trim().toLowerCase() : '';
+  const agent = agentArg ? registry.enabled().find(p => p.id === agentArg)?.id : undefined;
+  if (agentArg && !agent) {
+    vscode.window.showWarningMessage(`Unknown or disabled agent "${agentArg.slice(0, 40)}".`);
+    return;
+  }
+  if (!registry.enabled().some(p => (!agent || p.id === agent) && p.isValidSessionId(id))) {
+    vscode.window.showWarningMessage('Not a valid conversation ID.');
+    return;
+  }
+  const key = `${agent ?? '*'}:${id}`;
+  if (resumesInFlight.has(key)) return;
+  resumesInFlight.add(key);
+  try {
+    const s = findArchivedConversation(index, registry, id, agent, searchIndex);
+    if (!s) {
+      vscode.window.showWarningMessage(`No transcript on this machine for conversation ${id}.`);
+      return;
+    }
+    const provider = registry.getProvider(s.agent);
+    if (provider?.resumeNeedsCwd && s.cwd && !fs.existsSync(s.cwd)) {
+      vscode.window.showWarningMessage(`The folder of this conversation no longer exists: ${s.cwd}`);
+      return;
+    }
+    const { byConversationId } = buildSessionConversationIndex(index.getAllWorkspaces());
+    await openArchivedConversation(index, registry, claudeTracker, s, byConversationId.get(s.sessionId), { confirm: true });
+  } finally {
+    resumesInFlight.delete(key);
   }
 }
 

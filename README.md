@@ -216,7 +216,7 @@ orders them by VS Code's group names, so the vertical order differs).
   origin. The conversations were already independent.
 - **Resume Other Session…** — pick an earlier conversation from this session's
   own history and continue it in this tab. For anything that ever ran on the
-  machine, use **Resume Session from Archive…** in the view toolbar instead.
+  machine, use **Search & Resume Conversations…** (the clock) in the view toolbar instead.
 - **View Conversation** — the whole transcript rendered as a readable document.
 - **Copy Last Conversation ID / Path** — for `claude --resume <id>` or for
   opening the raw `.jsonl`.
@@ -468,6 +468,12 @@ covered; subagents are not followed.
   anyway, until you rename it again; an empty name follows it too.
 - The tmux session is never renamed. **Disable** gives every tab it
   renamed its own name back as you open it.
+- A stopped or paused session keeps the last title it showed, as long
+  as that conversation is the one it will resume. A `/clear` drops it
+  until the new conversation gets its own.
+- A fork group whose origin had no name of its own shows the origin
+  conversation's title. **Rename Fork Group…** on the group row names
+  it yourself; an empty name goes back to the automatic one.
 
 ### A day with it
 
@@ -658,7 +664,7 @@ Two extra link detectors on top of VS Code's built-in one. Both read the **rende
 - **API-equivalent cost in USD** — cost per session computed from the transcript against a built-in rate card (hardcoded in `src/claude-pricing.ts`, last verified January 2026 — it does not fetch live prices), per-model (Opus 4.7 at $5/$25 in/out, Opus 4.1 at $15/$75, Sonnet at $3/$15, Haiku at $1/$5, plus separate cache-read and 5-min/1-hour cache-write tiers). Retried turns are de-duplicated by `message.id`; subagents on different models are counted automatically with their own rate. Sidebar shows `opus · $55.25 · 364 turns`; tooltip shows per-model breakdown and the raw token totals
 - **Context-window gauge** — the `31% ctx` suffix appears next to every Claude-active session. Crosses `terminalSessions.contextWarnPct` (default 0.8) → `⚠ 87% ctx`. Limit is auto-detected per session: Opus/Sonnet 4.5+ default to 1M-context, older models to 200k; if any single turn exceeds 200k we pin the limit to 1M. Subagent turns are excluded because they have their own context
 - **Nested detail rows** — under each active session, rows show last user message, last Claude reply, model/cost/turns, current tool with its input (e.g. `Bash: "npm run build"`); configurable `auto | always | off`
-- **Search past sessions** — `$(search)` button in the sidebar (or `Terminal Sessions: Search ALL Past Conversations…` command) opens a fuzzy picker over every transcript on your machine. Jump to transcript, copy session ID, or reveal the cwd
+- **Search & Resume Conversations** — the `$(history)` button on the sidebar toolbar (or `Search & Resume Conversations…` in the Command Palette) lists every past conversation on disk, for every agent you have enabled, plus stopped and killed sessions, newest first. Typing filters the list by title, session name and folder. With **Search inside conversations** on (Filters, or the speech-bubble button), it also matches everything you wrote in a Claude conversation (from a local index) and, a moment later, what the agent answered (Claude, with the ripgrep that ships with the editor, from 3 letters; files the agent read are skipped). Conversations whose title matches come first, then those your sessions ran, then matches inside a prompt. Runs started by tools (`claude -p`, `codex exec`, reviews delegated to Codex or Grok) are hidden; **Filters → Also search runs made by agents** includes them. Each row says where it matched (`you: "…"`, `agent: "…"`), and conversations found only in the answers get their own section with a robot icon. The title bar says what is being searched; its buttons switch between this workspace and all projects, turn searching inside conversations on or off, and open **Filters** (inside conversations, agents, time range, runs made by agents, reset) inside the same picker. `@codex` or `7d` in the query narrows one search. Nothing found offers to search everywhere. Enter resumes (a running conversation just comes to the front; otherwise it asks where), the book button reads the conversation, the pencil renames it
 - **Filter the sidebar in place** — `$(search-fuzzy)` button (or `Terminal Sessions: Filter Sidebar Sessions…`): the tree filters live as you type (name, folder path, group, workspace), showing matches as a flat list under a `Filter:` header row; the filter persists until you click that row to clear it. A QuickPick variant lives in the palette as `Terminal Sessions: Search Sessions (Name, Folder, Group)…`
 - **Deduplicated live state** — if you ran `claude --resume <id>` in multiple tabs over time, the tracker now transfers ownership on each new hook event, so only the tab currently running that conversation shows live state. Others snap back to idle
 
@@ -671,7 +677,13 @@ Two extra link detectors on top of VS Code's built-in one. Both read the **rende
 - **Background agents keep the session working** — when the main agent ends its turn and leaves background agents or teammates running, the tab and the row stay in the working colour until they finish. The done notification and the unread marker wait for the real end: normally the main agent's next turn, after the agents report back, or the moment the agents are done if it never wakes. Stop and Restart warn that the agents would be stopped
 
 ### Archive, conversation viewer & cleanup
-- **Resume Session from Archive** — the `$(history)` button on the sidebar toolbar (or `Terminal Sessions: Resume Session from Archive…`) opens a picker of **every** past conversation on disk, across every agent you have enabled, even when nothing is live in tmux for it. Defaults to the current workspace with a one-click toggle to show all projects. Accepting a row resumes it into your active session or a fresh persistent one
+- **Resume Conversation by ID** — paste a conversation id, or click a
+  resume link that a search tool printed in the terminal, e.g.
+  `cursor://visul.terminal-sessions/resume?agent=claude&id=<id>`. The
+  extension finds the transcript in the agent's own storage. If the
+  conversation is running in its own session, that tab comes to the front;
+  otherwise it asks where to resume it: the session that ran it (started
+  or restored if needed), or a new one. Nothing starts without that choice
 - **View Conversation** — right-click a session (or the eye button in the archive picker) to open a readable Markdown rendering of the conversation in VS Code's preview: user and assistant turns, with thinking blocks and tool calls in collapsible sections. No more squinting at raw `.jsonl`
 - **One Rename** — **Rename…** on a sidebar row or VS Code's **Rename…** on a tab names the row and the tab together, then asks whether the current conversation gets the name too (`terminalSessions.renameConversation`: ask, always, never). For Claude the name is written the way `/rename` writes it, so `claude --resume` shows it and a running Claude takes it from the next prompt; a name set with `/rename` is only replaced after asking. Conversations no session holds any more are renamed from the archive picker. Titles set inside the agent win, then the extension's name, then the agent's generated title (Claude `ai-title`, Codex thread name, Antigravity summaries, Grok `generated_title`), then the first prompt
 - **Clean Up Empty / Invalid Sessions** — a maintenance action (sidebar overflow `⋯` menu) that finds empty or "Invalid API key" conversations and soft-deletes them into `~/.claude/projects/.bak`, with a preview and confirmation. **Claude only** — Codex, Antigravity, and Grok transcripts are never classified or moved, and the soft-delete refuses any path outside `~/.claude/projects`. The agent's own database and session index are never touched; moved files can be restored manually
@@ -843,7 +855,7 @@ The extension runs on the workspace side (remote when connected over SSH, local 
 | `Terminal Sessions: Kill Session` | Pick a session to kill |
 | `Terminal Sessions: Kill All Sessions for This Workspace` | Clean up this project |
 | `Terminal Sessions: Kill All Stale Sessions` | Prune sessions older than `pruneAfterDays` |
-| `Terminal Sessions: Search ALL Past Conversations...` | Fuzzy picker over every Claude transcript on your machine |
+| `Search & Resume Conversations...` | Search titles, your messages and the agent's answers in every past conversation, then resume |
 | `Terminal Sessions: Filter Sidebar Sessions...` | Live in-place filter of the sidebar tree (name, folder, group, workspace) |
 | `Terminal Sessions: Search Sessions (Name, Folder, Group)...` | Same matching as a QuickPick — accept jumps to the session and attaches |
 | `Terminal Sessions: Clear Sidebar Filter` | Drop the live text filter (same as clicking the `Filter:` header row) |
@@ -854,7 +866,7 @@ The extension runs on the workspace side (remote when connected over SSH, local 
 | `Terminal Sessions: Reload tmux Config` | Apply config changes to running sessions |
 | `Terminal Sessions: Install AI Agent Hooks` | Writes lifecycle hooks for each enabled agent into its own settings file (Claude `~/.claude/settings.json`, Codex `~/.codex/hooks.json`, Antigravity `~/.gemini/antigravity-cli/settings.json`) |
 | `Terminal Sessions: Uninstall AI Agent Hooks` | Removes the hooks for all agents |
-| `Terminal Sessions: Resume Session from Archive...` | Picker over every past conversation on disk (Claude/Codex/Antigravity); resume, view, or name any of them |
+| `Terminal Sessions: Resume Conversation by ID...` | Resume one conversation from its id or from a resume link |
 | `Terminal Sessions: Resume Other Session...` | Resume a different past conversation into the current session (cross-agent) |
 | `Terminal Sessions: Change Sidebar Filter` | Show all / running-only / stopped-only sessions |
 | `Terminal Sessions: Change Sidebar Sort` | Pick custom / recently-used / creation-order / alphabetical |

@@ -219,6 +219,7 @@ export const codexProvider: AgentProvider = {
         lineCount: summary?.lineCount,
         byteSize: summary?.byteSize ?? file.size,
         mtimeMs: summary?.mtimeMs ?? file.mtimeMs,
+        automated: isCodexAutomated(file.path),
       });
     }
 
@@ -241,6 +242,10 @@ export const codexProvider: AgentProvider = {
           firstUserMessage: entry.thread_name,
           autoTitle: entry.thread_name,
           mtimeMs: entry.updated_at ? Date.parse(entry.updated_at) || undefined : undefined,
+          // No rollout to read: the Claude plugin's runs are named after it.
+          automated: rolloutById.has(entry.id)
+            ? isCodexAutomated(rolloutById.get(entry.id)!)
+            : /^Codex Companion Task\b/i.test(entry.thread_name ?? ''),
         });
       }
     }
@@ -382,4 +387,21 @@ function isCwdMatch(sessionCwd: string, cwd: string): boolean {
   if (sessionCwd === cwd) return true;
   const base = cwd.endsWith('/') ? cwd : cwd + '/';
   return sessionCwd.startsWith(base);
+}
+
+/** A rollout started by a tool rather than the Codex TUI: `codex exec`, or a
+ *  run driven from another agent (originator "Claude Code"). Only the CLI's own
+ *  interactive source counts as the user's. */
+function isCodexAutomated(rolloutPath: string): boolean {
+  try {
+    const fd = fs.openSync(rolloutPath, 'r');
+    const buf = Buffer.alloc(4096);
+    const n = fs.readSync(fd, buf, 0, buf.length, 0);
+    fs.closeSync(fd);
+    const head = buf.subarray(0, n).toString('utf8');
+    const source = /"source":"([^"]*)"/.exec(head)?.[1];
+    const originator = /"originator":"([^"]*)"/.exec(head)?.[1];
+    if (source === 'exec' || originator === 'codex_exec' || originator === 'Claude Code') return true;
+    return false;
+  } catch { return false; }
 }

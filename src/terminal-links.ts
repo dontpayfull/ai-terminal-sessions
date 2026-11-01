@@ -2,7 +2,8 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { findCandidates, findWebCandidates, PathCandidate } from './links-matcher';
+import { findCandidates, findWebCandidates, findResumeLinks, PathCandidate } from './links-matcher';
+import { COMMAND } from './config';
 
 /**
  * Terminal link provider: two detectors the built-in one lacks.
@@ -38,6 +39,7 @@ interface LinkData {
   col?: number | null;
   tail?: string;
   url?: string;
+  resume?: { id: string; agent?: string };
 }
 
 type TsLink = vscode.TerminalLink & { data: LinkData };
@@ -217,9 +219,18 @@ export function registerTerminalLinks(ctx: vscode.ExtensionContext): void {
           // extension takes effect without a window reload.
           const standalone = !!vscode.extensions.getExtension('visul.terminal-path-links');
           const cfg = vscode.workspace.getConfiguration('terminalSessions');
-          const links: TsLink[] = [];
+          // Resume links first: nothing else may claim their text.
+          const links: TsLink[] = findResumeLinks(linkCtx.line).map((c) => ({
+            startIndex: c.start,
+            length: c.length,
+            tooltip: 'Resume this conversation in Terminal Sessions',
+            data: { resume: { id: c.id, agent: c.agent } },
+          }));
+          const resumeSpans = links.map((l) => [l.startIndex, l.startIndex + l.length] as const);
           if (cfg.get<boolean>('pathLinks', true) && !standalone) {
-            links.push(...(await providePathLinks(linkCtx)));
+            for (const p of await providePathLinks(linkCtx)) {
+              if (!resumeSpans.some(([a, b]) => p.startIndex < b && p.startIndex + p.length > a)) links.push(p);
+            }
           }
           if (cfg.get<boolean>('webLinks', true)) {
             const taken = links.map((l) => [l.startIndex, l.startIndex + l.length] as const);
@@ -237,6 +248,7 @@ export function registerTerminalLinks(ctx: vscode.ExtensionContext): void {
       async handleTerminalLink(link: TsLink): Promise<void> {
         try {
           const d = link.data || {};
+          if (d.resume) return void (await vscode.commands.executeCommand(COMMAND.resumeConversationById, d.resume));
           if (d.url) return void (await vscode.env.openExternal(vscode.Uri.parse(d.url)));
           if (d.resolved) return void (await openResolved(d.resolved, d.line, d.col));
           if (d.tail) {

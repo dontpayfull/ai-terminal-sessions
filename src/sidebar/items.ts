@@ -326,7 +326,7 @@ export class SessionTreeItem extends vscode.TreeItem {
       this.resourceUri = vscode.Uri.parse(
         `${STOPPED_URI_SCHEME}:${encodeURIComponent(session.name)}`,
       );
-      const displayHeader = session.label || `Session #${session.tabId}`;
+      const displayHeader = followedTitle || session.label || `Session #${session.tabId}`;
       const parts = [
         `**${displayHeader}** _(stopped)_`,
         `ID: \`${session.name}\``,
@@ -965,7 +965,7 @@ export class FilterHeaderItem extends vscode.TreeItem {
     this.description = `${count} match${count === 1 ? '' : 'es'} — click to clear`;
     this.iconPath = new vscode.ThemeIcon('filter-filled', new vscode.ThemeColor('charts.blue'));
     this.contextValue = 'filterHeader';
-    this.tooltip = 'Showing only sessions matching the filter (name, folder, group, workspace). Click to clear it.';
+    this.tooltip = 'Showing only sessions matching the filter (name, conversation title, folder, group, note, tag, workspace). Click to clear it.';
     this.command = {
       command: 'terminalSessions.clearSidebarTextFilter',
       title: 'Clear Filter',

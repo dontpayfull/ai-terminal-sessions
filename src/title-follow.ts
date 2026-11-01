@@ -7,7 +7,7 @@ import { AgentRegistry } from './agents/registry';
 import { getConfig } from './config';
 import { parseSessionName } from './workspace-id';
 import { conversationTitle } from './conversation-title';
-import { readClaudeCustomTitle } from './claude-transcript';
+import { readClaudeCustomTitle, findTranscriptBySessionId } from './claude-transcript';
 import { isDefaultOpencodeTitle } from './agents/opencode/transcript';
 import { PARKED_PREFIX } from './profile-provider';
 import { isWalkingTabs, runTabWalk } from './tab-order';
@@ -42,6 +42,17 @@ export function isTitlePinned(
   const label = meta?.label?.trim();
   if (!label) return false;
   return label !== wsLabel?.trim() && label !== meta?.folderPath?.split('/').pop();
+}
+
+/** The title a stopped (or not yet re-hooked) session keeps showing: the last
+ *  one followed, as long as its conversation is still the one the session
+ *  resumes. A /clear or another resume moves the head and drops it. */
+export function persistedTitle(
+  meta: Pick<SessionLabel, 'followedTitle' | 'followedTitleConv' | 'agentSessions' | 'lastClaudeSessionId'> | undefined,
+): string | undefined {
+  if (!meta?.followedTitle || !meta.followedTitleConv) return undefined;
+  const head = meta.agentSessions?.[0]?.id ?? meta.lastClaudeSessionId;
+  return head === meta.followedTitleConv ? meta.followedTitle : undefined;
 }
 
 /** A title must hold this long before a tab takes it (titles get revised). */
@@ -172,6 +183,8 @@ export class TitleFollower implements vscode.Disposable {
   private readonly settling = new Map<string, { title: string; since: number }>();
   /** Per tmux session: the conversation the shown title belongs to. */
   private readonly conversation = new Map<string, string>();
+  /** Round-robin position over stopped sessions, one re-read per tick. */
+  private stoppedCursor = 0;
   private timer: NodeJS.Timeout | undefined;
   private walking = false;
   private ticking = false;
@@ -205,8 +218,9 @@ export class TitleFollower implements vscode.Disposable {
   titleFor(sessionName: string): string | undefined {
     if (!this.enabled()) return undefined;
     const parsed = parseSessionName(sessionName, getConfig().sessionPrefix);
-    if (parsed && this.isPinned(parsed.hash, sessionName)) return undefined;
-    return this.shown.get(sessionName);
+    if (!parsed) return this.shown.get(sessionName);
+    if (this.isPinned(parsed.hash, sessionName)) return undefined;
+    return this.shown.get(sessionName) ?? persistedTitle(this.index.getSessionMeta(parsed.hash, sessionName));
   }
 
   /** Whether the session keeps its own name instead of the conversation's. */
@@ -268,10 +282,11 @@ export class TitleFollower implements vscode.Disposable {
     }
     const now = Date.now();
     let changed = false;
+    const stopped: Array<{ hash: string; name: string; meta: SessionLabel; wsPath: string }> = [];
     const live = new Set<string>();
-    for (const [, ws] of Object.entries(this.index.getAllWorkspaces())) {
+    for (const [hash, ws] of Object.entries(this.index.getAllWorkspaces())) {
       for (const [name, meta] of Object.entries(ws.sessions ?? {})) {
-        if (meta.stopped) continue;
+        if (meta.stopped) { stopped.push({ hash, name, meta, wsPath: ws.path }); continue; }
         live.add(name);
         // Another conversation in the same session (/clear, a resume): the
         // old title goes at once, the session's own name until a new one.
@@ -286,6 +301,14 @@ export class TitleFollower implements vscode.Disposable {
         if (!title) {
           this.settling.delete(name);
           if (this.shown.delete(name)) changed = true;
+          // The agent is up on the conversation the kept title belongs to, and
+          // it has none now (a cleared name): forget it. An agent that exited
+          // keeps it, since that conversation is the one to resume.
+          const snap = this.tracker.getSnapshot(name);
+          if (snap && snap.state !== 'none' && snap.sessionId && snap.sessionId === meta.followedTitleConv) {
+            this.index.clearSessionFollowedTitle(hash, name);
+            changed = true;
+          }
           continue;
         }
         if (this.shown.get(name) === title) { this.settling.delete(name); continue; }
@@ -294,14 +317,49 @@ export class TitleFollower implements vscode.Disposable {
         if (now - s.since < SETTLE_MS) continue;
         this.settling.delete(name);
         this.shown.set(name, title);
+        const sid = this.tracker.getSnapshot(name)?.sessionId;
+        if (sid) this.index.setSessionFollowedTitle(hash, name, title, sid);
         changed = true;
       }
+    }
+    // Stopped sessions: re-read one conversation title per tick, so a title
+    // kept from before (or one renamed or cleared since) catches up.
+    if (stopped.length > 0) {
+      const t = stopped[this.stoppedCursor++ % stopped.length];
+      if (await this.revalidate(t.hash, t.name, t.meta, t.wsPath)) changed = true;
     }
     for (const name of [...this.shown.keys()]) if (!live.has(name)) { this.shown.delete(name); changed = true; }
     for (const name of [...this.conversation.keys()]) if (!live.has(name)) this.conversation.delete(name);
     if (changed) this.refresh();
     await this.applyActive();
     await this.maybeWalkAway();
+  }
+
+  /** Read the title of a stopped session's conversation and keep it in step:
+   *  set, update or clear the kept one. True when it changed. */
+  private async revalidate(hash: string, name: string, meta: SessionLabel, wsPath: string): Promise<boolean> {
+    const ref = meta.agentSessions?.[0]
+      ?? (meta.lastClaudeSessionId ? { agent: 'claude' as const, id: meta.lastClaudeSessionId } : undefined);
+    if (!ref) return false;
+    const cwd = meta.folderPath || wsPath;
+    const tp = ref.agent === 'claude'
+      ? findTranscriptBySessionId(cwd, ref.id)
+      : this.registry.getProvider(ref.agent)?.resolveTranscriptPath(ref.id, cwd);
+    if (!tp) return false;
+    const c = await this.readTitles(tp, ref.agent);
+    const title = cleanTitle(conversationTitle(
+      { sessionId: ref.id, customTitle: c?.custom, autoTitle: c?.auto },
+      id => (id ? this.index.getSessionName(id) : undefined),
+      200,
+    ).title);
+    if (title) {
+      if (meta.followedTitle === title && meta.followedTitleConv === ref.id) return false;
+      this.index.setSessionFollowedTitle(hash, name, title, ref.id);
+      return true;
+    }
+    if (meta.followedTitleConv !== ref.id || !meta.followedTitle) return false;
+    this.index.clearSessionFollowedTitle(hash, name);
+    return true;
   }
 
   private conversationOf(sessionName: string): string | undefined {

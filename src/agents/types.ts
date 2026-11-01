@@ -69,6 +69,10 @@ export interface AgentSessionSummary {
    *  so only main threads are listed. Providers without the concept never set
    *  it, so all their sessions stay visible (Codex/agy/grok today). */
   subsessionRole?: 'teammate' | 'subagent';
+  /** Started by a tool, not typed in by the user: `claude -p`, `codex exec`,
+   *  a Codex or Grok run delegated from another agent. Hidden from the
+   *  conversation search unless asked for. */
+  automated?: boolean;
 }
 
 /**

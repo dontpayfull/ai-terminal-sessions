@@ -25,6 +25,9 @@ export interface LinkedTerminalSession {
   killedAt?: string;
   stoppedAt?: string;
   isHead: boolean;
+  /** The agent of the conversation the pane runs (its head). A conversation
+   *  of another agent found only in its history was delegated from it. */
+  headAgent?: AgentId;
 }
 
 function collectSessionAgentRefs(meta: SessionLabel): Array<{ agent: AgentId; id: string; isHead: boolean; ts: number }> {
@@ -97,8 +100,10 @@ export function buildSessionConversationIndex(
         stoppedAt: meta.stoppedAt,
         isHead: true,
       };
+      const refs = collectSessionAgentRefs(meta);
+      base.headAgent = refs.find(r => r.isHead)?.agent;
       allLinkedSessions.push(base);
-      for (const ref of collectSessionAgentRefs(meta)) {
+      for (const ref of refs) {
         const candidate: LinkedTerminalSession = { ...base, isHead: ref.isHead };
         const r = rankOf(candidate);
         const prev = bestRank.get(ref.id);
@@ -123,8 +128,10 @@ export function buildSessionConversationIndex(
         killedAt: k.killedAt,
         isHead: true,
       };
+      const refs = collectSessionAgentRefs(k.meta);
+      base.headAgent = refs.find(r => r.isHead)?.agent;
       allLinkedSessions.push(base);
-      for (const ref of collectSessionAgentRefs(k.meta)) {
+      for (const ref of refs) {
         const candidate: LinkedTerminalSession = { ...base, isHead: ref.isHead };
         const r = rankOf(candidate);
         const prev = bestRank.get(ref.id);

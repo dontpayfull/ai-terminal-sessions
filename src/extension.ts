@@ -3,7 +3,10 @@ import { SessionIndex } from './session-manager';
 import { registerPersistentProfile } from './profile-provider';
 import { registerSeparators } from './separator';
 import { registerCommands, syncActiveTerminalContext, syncSpecialFolderContexts, wireRenameFlow } from './commands';
-import { registerSidebar, refreshSidebar, revealSessionInSidebar, setSidebarTitleSource } from './sidebar/tree-provider';
+import { registerSidebar, refreshSidebar, revealSessionInSidebar, setSidebarTitleSource, setConversationTitleSource } from './sidebar/tree-provider';
+import { conversationTitle } from './conversation-title';
+import { archivedFromEntry } from './conversation-search';
+import { cleanTitle } from './title-follow';
 import { TitleFollower } from './title-follow';
 import { StatusBar } from './status-bar';
 import { maybePromptResume } from './toast';
@@ -122,9 +125,19 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   // of the conversation running in each session.
   const titles = new TitleFollower(index, claudeTracker, registry, tracker, refreshSidebar);
   setSidebarTitleSource(n => titles.titleFor(n));
+  // A session's last Claude conversation title, from the search index.
+  setConversationTitleSource(n => {
+    const parsed = parseSessionName(n, getConfig().sessionPrefix);
+    const meta = parsed ? index.getSessionMeta(parsed.hash, n) : undefined;
+    const head = meta?.agentSessions?.[0] ?? (meta?.lastClaudeSessionId ? { agent: 'claude', id: meta.lastClaudeSessionId } : undefined);
+    if (!head || head.agent !== 'claude') return undefined;
+    const e = searchIndex.entryById(head.id);
+    const lookup = (id: string): string | undefined => index.getSessionName(id);
+    return e ? cleanTitle(conversationTitle(archivedFromEntry(e, lookup), lookup).title) : undefined;
+  });
   setFollowedTitleSource(n => titles.titleFor(n));
   ctx.subscriptions.push(titles, {
-    dispose: () => { setSidebarTitleSource(undefined); setFollowedTitleSource(undefined); },
+    dispose: () => { setSidebarTitleSource(undefined); setFollowedTitleSource(undefined); setConversationTitleSource(undefined); },
   }, vscode.commands.registerCommand(COMMAND.followTitleAgain, (item?: SessionTreeItem) => {
     if (!(item instanceof SessionTreeItem)) return;
     if (!titles.isPinned(item.session.workspaceHash, item.session.name)) {
@@ -251,6 +264,16 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
 function registerNotificationDeepLink(ctx: vscode.ExtensionContext, index: SessionIndex): void {
   ctx.subscriptions.push(vscode.window.registerUriHandler({
     handleUri(uri: vscode.Uri): void {
+      if (uri.path === '/resume') {
+        // Only agent + id pass through; the command validates both and asks
+        // where to resume before anything starts.
+        const q = new URLSearchParams(uri.query);
+        void vscode.commands.executeCommand(COMMAND.resumeConversationById, {
+          id: q.get('id') ?? undefined,
+          agent: q.get('agent') ?? undefined,
+        });
+        return;
+      }
       if (uri.path !== '/focus') return;
       const session = new URLSearchParams(uri.query).get('session');
       if (!session) return;

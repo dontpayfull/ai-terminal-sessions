@@ -46,9 +46,16 @@ export interface SubagentSnapshot {
   firstOffset?: number;
 }
 
+/** A shell the agent left running in the background (`Bash` with
+ *  `run_in_background`), until its task notification arrives or it is stopped. */
+/** `doneAt`: when its task notification came (the lead is being woken). */
+export interface BackgroundShell { id: string; since: number; doneAt?: number }
+
 export interface TranscriptSnapshot {
   sessionId: string;
   path: string;
+  /** Background shells still running, oldest first. */
+  backgroundShells?: BackgroundShell[];
   model?: string;
   lastUserMessage?: string;
   lastUserMessageAt?: Date;
@@ -254,7 +261,7 @@ export interface TranscriptSummary {
  * typed right after `/clear`), and the command name (e.g. `/clear`) as a fallback
  * label. Non-wrapped messages pass through untouched.
  */
-function unwrapLocalCommand(raw: string): { text?: string; commandName?: string } {
+export function unwrapLocalCommand(raw: string): { text?: string; commandName?: string } {
   if (!raw.includes('<local-command-caveat>')
     && !raw.includes('<command-name>')
     && !raw.includes('<local-command-stdout>')
@@ -721,11 +728,79 @@ export class TranscriptTailer {
  * helpers (never `this`), so it lives at module scope and is shared by the
  * generic TranscriptTailer via the provider.
  */
+const BG_STARTED_RE = /^Command running in background with ID: ([A-Za-z0-9_-]+)/;
+const BG_NOTIFIED_RE = /<task-id>([A-Za-z0-9_-]+)<\/task-id>/g;
+const BG_STOP_TOOLS = new Set(['TaskStop', 'KillShell', 'KillBash']);
+
+/** Follow the lead's background shells: started (its tool result says
+ *  "running in background with ID: x"), finished (a `<task-notification>`
+ *  for x, as a queued or delivered message), or stopped (TaskStop/KillShell
+ *  on x). Only the substring tests run on most lines. True when the set changed. */
+export function trackBackgroundShells(snap: TranscriptSnapshot, line: string, evt: Record<string, unknown>): boolean {
+  if (evt.isSidechain === true) return false;
+  let changed = false;
+  const ts = typeof evt.timestamp === 'string' ? Date.parse(evt.timestamp) : NaN;
+  const since = Number.isFinite(ts) ? ts : Date.now();
+  const list = snap.backgroundShells ?? [];
+  if (line.includes('running in background with ID: ') && evt.type === 'user') {
+    // Only a tool result that starts with the phrase: a file read or a prompt
+    // that merely contains it is not a shell.
+    const content = (evt.message as { content?: unknown } | undefined)?.content;
+    for (const b of Array.isArray(content) ? content : []) {
+      const blk = b as { type?: unknown; content?: unknown };
+      if (blk?.type !== 'tool_result') continue;
+      const text = extractRawText(blk.content) ?? '';
+      const m = BG_STARTED_RE.exec(text);
+      if (m && !list.some(s => s.id === m[1])) { list.push({ id: m[1], since }); changed = true; }
+    }
+  }
+  const drop = (id: string): void => {
+    const i = list.findIndex(s => s.id === id);
+    if (i >= 0) { list.splice(i, 1); changed = true; }
+  };
+  if (line.includes('<task-notification>')) {
+    // Kept a moment as finished: the notification wakes the lead, and until
+    // its new turn shows up the session is still at work.
+    for (const m of line.matchAll(BG_NOTIFIED_RE)) {
+      const s = list.find(x => x.id === m[1]);
+      if (s && s.doneAt === undefined) { s.doneAt = since; changed = true; }
+    }
+    for (let i = list.length - 1; i >= 0; i--) {
+      const d = list[i].doneAt;
+      if (d !== undefined && since - d > 600_000) { list.splice(i, 1); changed = true; }
+    }
+  }
+  if (evt.type === 'assistant' && list.length > 0) {
+    const content = (evt.message as { content?: unknown } | undefined)?.content;
+    if (Array.isArray(content)) {
+      for (const b of content) {
+        const blk = b as { type?: unknown; name?: unknown; input?: Record<string, unknown> };
+        if (blk?.type !== 'tool_use' || typeof blk.name !== 'string' || !BG_STOP_TOOLS.has(blk.name)) continue;
+        for (const k of ['task_id', 'shell_id', 'bash_id', 'id']) {
+          const v = blk.input?.[k];
+          if (typeof v === 'string') drop(v);
+        }
+      }
+    }
+  }
+  if (changed) snap.backgroundShells = list;
+  return changed;
+}
+
 export function reduceClaudeTranscriptLine(state: TailState, line: string): boolean {
+  const changed = reduceClaudeLine(state, line);
+  const shells = state.scratch?.shellsChanged === true;
+  if (shells) state.scratch!.shellsChanged = false;
+  return changed || shells;
+}
+
+function reduceClaudeLine(state: TailState, line: string): boolean {
     let evt: Record<string, unknown>;
     try { evt = JSON.parse(line); }
     catch { return false; }
     const type = typeof evt.type === 'string' ? evt.type : '';
+    if (trackBackgroundShells(state.snapshot, line, evt)) (state.scratch ??= {}).shellsChanged = true;
+    if (type !== 'user' && type !== 'assistant' && type !== 'system') return false;
     // A local slash command logs its output as a `system` local_command record
     // (`/clear`) or as a `<local-command-stdout>` user record (handled below).
     if (type === 'system' && evt.subtype === 'local_command' && evt.isSidechain !== true) {

@@ -2,7 +2,7 @@
   "name": "terminal-sessions",
   "displayName": "AI Terminal Sessions",
   "description": "Persistent terminals for your AI coding agents in Cursor/VSCode via tmux — survive editor restart, workspace-scoped. Live AI-agent status in the sidebar for Claude Code, Codex, Antigravity, Grok, and OpenCode: working/tool/waiting state, context-window %, cost, last user/assistant messages. Browse, view, name, resume, and clean up every past conversation on your machine.",
-  "version": "0.41.1",
+  "version": "0.42.0",
   "publisher": "visul",
   "license": "MIT",
   "icon": "media/extension-icon.png",
@@ -610,8 +610,12 @@
       },
       {
         "command": "terminalSessions.resumeFromArchive",
-        "title": "Resume Session from Archive...",
+        "title": "Search & Resume Conversations (titles, your messages, the agent's answers)...",
         "icon": "$(history)"
+      },
+      {
+        "command": "terminalSessions.resumeConversationById",
+        "title": "Resume Conversation by ID..."
       },
       {
         "command": "terminalSessions.cleanupSessions",
@@ -774,6 +778,10 @@
         "icon": "$(debug-disconnect)"
       },
       {
+        "command": "terminalSessions.renameForkGroup",
+        "title": "Rename Fork Group..."
+      },
+      {
         "command": "terminalSessions.start",
         "title": "Start Session",
         "icon": "$(play)"
@@ -800,7 +808,7 @@
       },
       {
         "command": "terminalSessions.findSession",
-        "title": "Terminal Sessions: Search ALL Past Conversations (every agent, by prompt text)...",
+        "title": "Terminal Sessions: Search ALL Past Conversations...",
         "icon": "$(search)"
       },
       {
@@ -1113,6 +1121,14 @@
         },
         {
           "command": "terminalSessions.unlinkBranch",
+          "when": "false"
+        },
+        {
+          "command": "terminalSessions.renameForkGroup",
+          "when": "false"
+        },
+        {
+          "command": "terminalSessions.findSession",
           "when": "false"
         },
         {
@@ -1574,7 +1590,7 @@
           "group": "navigation@0"
         },
         {
-          "command": "terminalSessions.findSession",
+          "command": "terminalSessions.resumeFromArchive",
           "when": "view == terminalSessions.sessions",
           "group": "navigation@4.8"
         },
@@ -1617,11 +1633,6 @@
           "command": "terminalSessions.alertsEnable",
           "when": "view == terminalSessions.sessions && !terminalSessions.alertsEnabled",
           "group": "navigation@4"
-        },
-        {
-          "command": "terminalSessions.resumeFromArchive",
-          "when": "view == terminalSessions.sessions",
-          "group": "navigation@5"
         },
         {
           "command": "terminalSessions.saveOpenAsTag",
@@ -1824,6 +1835,11 @@
           "command": "terminalSessions.unlinkBranch",
           "when": "view == terminalSessions.sessions && viewItem =~ /^session.*\\.branched\\b/",
           "group": "open@2.5"
+        },
+        {
+          "command": "terminalSessions.renameForkGroup",
+          "when": "view == terminalSessions.sessions && viewItem == branchCluster",
+          "group": "edit@1"
         },
         {
           "command": "terminalSessions.resumeOtherClaude",

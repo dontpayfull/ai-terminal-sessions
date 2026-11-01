@@ -116,6 +116,9 @@ export interface BranchSet {
   // fork stays "{origin} · fork N" instead of nesting suffixes. Older sets
   // without this field fall back to `name` with the " ⑂" stripped.
   baseLabel?: string;
+  // Name the user gave the fork group (Rename Fork Group). Wins over everything;
+  // without it an unnamed origin shows its conversation's title instead.
+  customName?: string;
 }
 
 export interface GroupLabel {
@@ -146,6 +149,11 @@ export interface SessionLabel {
   // The tab title the follower last gave the open tab, so turning following
   // off (even after a reload) puts back exactly the tabs it renamed.
   followedTabName?: string;
+  // The last conversation title the follower showed, and the conversation it
+  // belongs to, so a stopped or parked session keeps showing it. Never part of
+  // `label`: a label pins the session, a followed title must not.
+  followedTitle?: string;
+  followedTitleConv?: string;
   icon?: string;
   color?: string;
   createdAt: string;

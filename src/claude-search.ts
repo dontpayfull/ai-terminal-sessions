@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { claudeCustomTitlePath, readClaudeCustomTitle } from './claude-transcript';
+import { claudeCustomTitlePath, readClaudeCustomTitle, slugFromCwd, unwrapLocalCommand } from './claude-transcript';
 
 export interface SessionIndexEntry {
   sessionId: string;
@@ -12,34 +12,68 @@ export interface SessionIndexEntry {
   aiTitle?: string;     // Claude's generated `ai-title`
   firstPrompt: string;
   lastPrompt: string;
-  turns: number;
+  /** Every human prompt, each cut to PROMPT_MAX chars; past MAX_PROMPTS the
+   *  middle ones go, keeping how the conversation started and where it is. */
+  prompts: string[];
+  turns: number;        // assistant records
+  lineCount: number;
   lastModified: number; // ms since epoch
+  byteSize: number;
+  /** Bytes read so far, up to the last complete line: the next scan of a
+   *  growing transcript starts here instead of at 0. */
+  scannedBytes: number;
   /** mtime of Claude's custom-title.json sidecar (0 = none). Part of the cache
    *  key: a rename/clear touches only the sidecar, not the transcript. */
   titleModified?: number;
+  /** Agent-team teammate, or a transcript of subagent turns only: hidden from
+   *  the archive, like the provider's own listing does. */
+  subsessionRole?: 'teammate' | 'subagent';
+  /** Claude's `entrypoint` (`cli`, `sdk-cli` for `claude -p`…). */
+  entrypoint?: string;
+  // Scan state carried between incremental reads.
+  customTitleRecord?: string; // last custom-title record ('' = cleared)
+  teammate?: boolean;
+  sawMainUser?: boolean;
+  userAssistantCount?: number;
 }
 
 const PROJECTS_ROOT = path.join(os.homedir(), '.claude', 'projects');
-// v2: entries carry customTitle/aiTitle. New file name so the pre-title cache is
-// rebuilt once instead of serving stale, title-less entries until each transcript
-// happens to change.
-const INDEX_PATH = path.join(os.homedir(), '.terminal-sessions', 'search-index.v2.json');
-const HEAD_SCAN_BYTES = 256 * 1024;  // scan first 256 KB for first user prompt
-const EXTENDED_SCAN_BYTES = 2 * 1024 * 1024;  // 2nd-pass window when the first prompt is past the head
-const TAIL_SCAN_BYTES = 128 * 1024;  // last 128 KB for last user prompt
+// v4: entries carry every user prompt, the entrypoint, and resume their scan
+// where they left off. New file name so an older cache is rebuilt once.
+const INDEX_PATH = path.join(os.homedir(), '.terminal-sessions', 'search-index.v4.json');
+const CHUNK_BYTES = 4 * 1024 * 1024;
+const PROMPT_MAX = 200;
+const MAX_PROMPTS = 50;
 const MAX_PREVIEW = 200;
-const SLASH_CMD_RE = /^(<command-name>|<command-message>|<command-args>|<local-command-[^>]+>|\/)/;
+// A promptless transcript this small is a sidechain/summary stub: not indexed.
+const STUB_BYTES = 256 * 1024;
+// Save partial progress during the first full build, so a reload keeps it.
+const SAVE_EVERY_FILES = 300;
+// A slash command (`/clear`, `/model opus`) or its recorded wrapper; a prompt
+// that merely starts with a path (`/work/app/main.ts crashes`) is a prompt.
+const SLASH_CMD_RE = /^(<command-name>|<command-message>|<command-args>|<local-command-[^>]+>|\/[A-Za-z][\w:-]*(?:\s|$))/;
+// Teammates carry their role on early records; past this many lines a match
+// would only come from tool input that mentions `agentName`.
+const TEAMMATE_SCAN_LINES = 200;
+const CWD_FIELD = /"cwd":"((?:[^"\\]|\\.)*)"/;
+
+interface IndexFile { version: 4; complete: boolean; entries: Record<string, SessionIndexEntry> }
 
 export class ClaudeSearchIndex {
   private entries = new Map<string, SessionIndexEntry>();  // key: transcriptPath
   private loaded = false;
+  /** True once a full walk has finished: until then the archive keeps
+   *  reading transcripts itself instead of trusting a partial index. */
+  private complete = false;
   private refreshing?: Promise<number>;
 
   async load(): Promise<void> {
     try {
-      const raw = fs.readFileSync(INDEX_PATH, 'utf8');
-      const data = JSON.parse(raw) as Record<string, SessionIndexEntry>;
-      for (const [k, v] of Object.entries(data)) this.entries.set(k, v);
+      const data = JSON.parse(await fs.promises.readFile(INDEX_PATH, 'utf8')) as IndexFile;
+      if (data?.version === 4 && data.entries) {
+        for (const [k, v] of Object.entries(data.entries)) this.entries.set(k, v);
+        this.complete = data.complete === true;
+      }
     } catch { /* no index yet */ }
     this.loaded = true;
   }
@@ -47,18 +81,28 @@ export class ClaudeSearchIndex {
   save(): void {
     try {
       fs.mkdirSync(path.dirname(INDEX_PATH), { recursive: true });
-      const obj = Object.fromEntries(this.entries);
-      fs.writeFileSync(INDEX_PATH, JSON.stringify(obj));
+      const file: IndexFile = { version: 4, complete: this.complete, entries: Object.fromEntries(this.entries) };
+      const tmp = `${INDEX_PATH}.${process.pid}.tmp`;
+      fs.writeFileSync(tmp, JSON.stringify(file));
+      fs.renameSync(tmp, INDEX_PATH);
     } catch (e) {
       console.error('[terminal-sessions] search-index save:', e);
     }
   }
 
-  /** Walk ~/.claude/projects/, index any .jsonl file we haven't seen or
-   *  whose mtime has advanced. Returns the number of entries added/updated.
-   *  Yields to the event loop every few files so a large projects tree doesn't
-   *  freeze the extension host, and de-dupes concurrent calls so it stays safe
-   *  to invoke repeatedly (activation + manual refresh). */
+  isComplete(): boolean { return this.complete; }
+
+  entry(transcriptPath: string): SessionIndexEntry | undefined { return this.entries.get(transcriptPath); }
+
+  entryById(sessionId: string): SessionIndexEntry | undefined {
+    for (const e of this.entries.values()) if (e.sessionId === sessionId) return e;
+    return undefined;
+  }
+
+  /** Walk ~/.claude/projects/, index any .jsonl file we haven't seen or that
+   *  changed (a grown one only from where the last scan stopped). Returns the
+   *  number of entries added/updated. Async throughout so a large projects
+   *  tree never freezes the extension host; concurrent calls share one walk. */
   async refresh(): Promise<number> {
     if (this.refreshing) return this.refreshing;
     this.refreshing = this.walk();
@@ -69,12 +113,13 @@ export class ClaudeSearchIndex {
   private async walk(): Promise<number> {
     if (!this.loaded) await this.load();
     let changed = 0;
-    let processed = 0;
+    let unsaved = 0;
     let projectDirs: string[] = [];
     try { projectDirs = await fs.promises.readdir(PROJECTS_ROOT); }
     catch { return 0; }
     const live = new Set<string>();
     for (const dir of projectDirs) {
+      if (dir === '.bak') continue;
       const full = path.join(PROJECTS_ROOT, dir);
       let files: string[] = [];
       try { files = (await fs.promises.readdir(full)).filter(f => f.endsWith('.jsonl')); }
@@ -86,37 +131,44 @@ export class ClaudeSearchIndex {
         try { stat = await fs.promises.stat(fpath); }
         catch { continue; }
         const existing = this.entries.get(fpath);
-        // Skip re-scan when our entry already reflects this mtime. (The old
-        // extra `turns > 0` guard forced a wasteful re-read of every 0-turn /
-        // promptless file on each refresh — an unchanged file yields identical
-        // results, and promptless-but-large files now get a sentinel entry.)
-        // The custom-title sidecar has its own mtime (clearing a name via the
-        // extension removes only that file), so it is part of the key too — an
-        // exact match, so a cleared title (sidecar gone → 0) also re-scans.
         const titleModified = sidecarMtime(fpath);
-        if (existing && existing.lastModified >= stat.mtimeMs
+        if (existing && existing.lastModified >= stat.mtimeMs && existing.byteSize === stat.size
             && (existing.titleModified ?? 0) === titleModified) continue;
-        const entry = readTranscriptSummary(fpath, stat.mtimeMs, f.replace(/\.jsonl$/, ''));
+        // Transcripts only grow; a shorter file was replaced: read it again.
+        const resume = existing && stat.size >= existing.scannedBytes ? existing : undefined;
+        // A rename through the sidecar is newer than any title record read so far.
+        const sidecarChanged = Boolean(existing && (existing.titleModified ?? 0) !== titleModified);
+        const entry = await scanTranscript(fpath, stat, f.replace(/\.jsonl$/, ''), resume, sidecarChanged);
         if (entry) {
           entry.titleModified = titleModified;
           this.entries.set(fpath, entry);
           changed++;
+          if (!this.complete && ++unsaved >= SAVE_EVERY_FILES) { this.save(); unsaved = 0; }
+        } else if (existing) {
+          this.entries.delete(fpath);
+          changed++;
         }
-        // Yield to the event loop periodically so activation doesn't stall the
-        // host while walking a large ~/.claude/projects.
-        if (++processed % 25 === 0) await new Promise(r => setImmediate(r));
       }
     }
-    // Drop entries for files that were deleted
     for (const p of Array.from(this.entries.keys())) {
-      if (!live.has(p)) this.entries.delete(p);
+      if (!live.has(p)) { this.entries.delete(p); changed++; }
     }
-    if (changed > 0) this.save();
+    const wasComplete = this.complete;
+    this.complete = true;
+    if (changed > 0 || !wasComplete) this.save();
     return changed;
   }
 
   list(): SessionIndexEntry[] {
     return [...this.entries.values()].sort((a, b) => b.lastModified - a.lastModified);
+  }
+
+  /** Entries of one project folder (`scopeCwd`), or all; newest first. */
+  listScope(scopeCwd?: string): SessionIndexEntry[] {
+    const all = this.list();
+    if (!scopeCwd) return all;
+    const slug = slugFromCwd(scopeCwd);
+    return all.filter(e => path.basename(path.dirname(e.transcriptPath)) === slug);
   }
 
   /** `extra` adds per-session text that lives outside the transcript (the name
@@ -128,7 +180,9 @@ export class ClaudeSearchIndex {
     const tokens = q.split(/\s+/);
     const results: Array<{ e: SessionIndexEntry; score: number }> = [];
     for (const e of this.entries.values()) {
-      const hay = `${e.customTitle ?? ''} ${extra?.(e.sessionId) ?? ''} ${e.aiTitle ?? ''} ${e.title} ${e.firstPrompt} ${e.lastPrompt} ${e.cwd}`.toLowerCase();
+      // Titles and prompt edges first: a hit there ranks above one deep in the
+      // prompt list.
+      const hay = `${e.customTitle ?? ''} ${extra?.(e.sessionId) ?? ''} ${e.aiTitle ?? ''} ${e.title} ${e.firstPrompt} ${e.lastPrompt} ${e.cwd} ${(e.prompts ?? []).join(' ')}`.toLowerCase();
       let score = 0;
       for (const t of tokens) {
         const idx = hay.indexOf(t);
@@ -146,157 +200,130 @@ export class ClaudeSearchIndex {
   }
 }
 
-function readTranscriptSummary(
+/** The prompt that matched `query`, cut around the first hit, for a picker's
+ *  detail line. Undefined when the match is not in a prompt. */
+export function promptSnippet(e: SessionIndexEntry, query: string, width = 110): string | undefined {
+  const tokens = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  if (tokens.length === 0) return undefined;
+  const prompts = e.prompts ?? [];
+  // The prompt with the most of the words (others may be in the title or folder).
+  let hit: string | undefined;
+  let best = 0;
+  for (const p of prompts) {
+    const lp = p.toLowerCase();
+    const n = tokens.filter(t => lp.includes(t)).length;
+    if (n > best) { best = n; hit = p; }
+    if (n === tokens.length) break;
+  }
+  if (!hit) return undefined;
+  const lower = hit.toLowerCase();
+  const at = lower.indexOf(tokens.find(t => lower.includes(t))!);
+  const start = Math.max(0, at - Math.floor(width / 3));
+  const cut = hit.slice(start, start + width);
+  return `${start > 0 ? '…' : ''}${cut}${start + width < hit.length ? '…' : ''}`;
+}
+
+/** Read a transcript from `prev.scannedBytes` (or the start) to its last
+ *  complete line, folding what it finds into the entry. */
+export async function scanTranscript(
   fpath: string,
-  lastModified: number,
+  stat: fs.Stats,
   sessionId: string,
-): SessionIndexEntry | undefined {
-  let firstPrompt = '';
-  let lastPrompt = '';
-  let cwd = '';
-  let turns = 0;
-  // Title records (`/rename` → custom-title, generated → ai-title) can sit anywhere;
-  // the last one in file order wins. Sniffed in every window we read anyway.
-  let customTitle: string | undefined;
-  let aiTitle: string | undefined;
-  const noteTitle = (data: Record<string, unknown>): void => {
-    if (data.type === 'custom-title' && typeof data.customTitle === 'string') customTitle = data.customTitle;
-    else if (data.type === 'ai-title' && typeof data.aiTitle === 'string') aiTitle = data.aiTitle;
-  };
-
-  let stat: fs.Stats;
-  try { stat = fs.statSync(fpath); } catch { return undefined; }
-  const size = stat.size;
-
-  // Read head window
-  const headBuf = readRange(fpath, 0, Math.min(HEAD_SCAN_BYTES, size));
-  if (headBuf) {
-    const lines = headBuf.toString('utf8').split('\n');
-    for (const line of lines) {
-      if (!line) continue;
-      // Past the first prompt only title records matter — skip the JSON.parse
-      // for everything else (a 256 KB head can be thousands of records).
-      if (firstPrompt && !line.includes('-title"')) continue;
-      const data = safeParse(line);
-      if (!data) continue;
-      noteTitle(data);
-      if (!cwd && typeof data.cwd === 'string') cwd = data.cwd;
-      if (firstPrompt) continue;
-      const prompt = extractUserPrompt(data);
-      if (prompt) firstPrompt = prompt;
-    }
-  }
-
-  // The first human prompt can lie past the head window — a huge leading record
-  // (pasted context) or a long run of sidechain/meta records before the first
-  // real turn. Extend the scan once before giving up so the session still gets a
-  // real title instead of being dropped and re-scanned on every refresh.
-  if (!firstPrompt && size > HEAD_SCAN_BYTES) {
-    const extBuf = readRange(fpath, 0, Math.min(EXTENDED_SCAN_BYTES, size));
-    if (extBuf) {
-      const lines = extBuf.toString('utf8').split('\n');
-      for (const line of lines) {
-        if (!line) continue;
-        const data = safeParse(line);
-        if (!data) continue;
-        noteTitle(data);
-        if (!cwd && typeof data.cwd === 'string') cwd = data.cwd;
-        const prompt = extractUserPrompt(data);
-        if (prompt) { firstPrompt = prompt; break; }
-      }
-    }
-  }
-
-  // Read tail window (and count assistant turns via full line count — cheap)
-  if (size > HEAD_SCAN_BYTES) {
-    const start = Math.max(0, size - TAIL_SCAN_BYTES);
-    const tailBuf = readRange(fpath, start, size - start);
-    if (tailBuf) {
-      const text = tailBuf.toString('utf8');
-      // Skip first (possibly partial) line
-      const lines = text.split('\n').slice(start === 0 ? 0 : 1);
-      // Forward pass for title records (last in file order wins) …
-      for (const line of lines) {
-        if (line && line.includes('-title"')) { const d = safeParse(line); if (d) noteTitle(d); }
-      }
-      // … backward pass for the last prompt.
-      for (let i = lines.length - 1; i >= 0; i--) {
-        const line = lines[i];
-        if (!line) continue;
-        const data = safeParse(line);
-        if (!data) continue;
-        const prompt = extractUserPrompt(data);
-        if (prompt) { lastPrompt = prompt; break; }
-      }
-    }
-  } else {
-    lastPrompt = firstPrompt;
-  }
-
-  // Full turn count: we read the whole file for small ones (<2MB), else estimate
-  if (size < 2 * 1024 * 1024) {
-    try {
-      const all = fs.readFileSync(fpath, 'utf8');
-      for (const line of all.split('\n')) {
-        if (!line) continue;
-        if (line.includes('"type":"assistant"')) turns++;
-      }
-    } catch { /* leave as 0 */ }
-  } else {
-    // Rough: assume ~1 assistant line per ~1200 bytes (typical)
-    turns = Math.round(size / 1200);
-  }
-
-  if (!firstPrompt) {
-    // No human prompt in either scan window. For a large file this is the
-    // "prompt buried past the window" case the picker was missing and
-    // re-reading every refresh — store a sentinel (titled by its last prompt or
-    // id) keyed on mtime so it's indexed once and the mtime guard skips it next
-    // time. A small promptless file is a pure sidechain/summary transcript; keep
-    // excluding it (cheap to re-scan, and it shouldn't clutter the picker).
-    if (size <= HEAD_SCAN_BYTES) return undefined;
-    const fallback = lastPrompt || `session ${sessionId.slice(0, 8)}`;
-    return {
-      sessionId,
-      transcriptPath: fpath,
-      cwd,
-      title: fallback.slice(0, 80),
-      customTitle: customTitle !== undefined ? customTitle || undefined : readClaudeCustomTitle(fpath),
-      aiTitle,
-      firstPrompt: (lastPrompt || '').slice(0, MAX_PREVIEW),
-      lastPrompt: (lastPrompt || '').slice(0, MAX_PREVIEW),
-      turns,
-      lastModified,
+  prev?: SessionIndexEntry,
+  sidecarChanged = false,
+): Promise<SessionIndexEntry | undefined> {
+  const e: SessionIndexEntry = prev
+    ? { ...prev, prompts: [...(prev.prompts ?? [])] }
+    : {
+      sessionId, transcriptPath: fpath, cwd: '', title: '', firstPrompt: '', lastPrompt: '', prompts: [],
+      turns: 0, lineCount: 0, lastModified: 0, byteSize: 0, scannedBytes: 0,
     };
+  let fh: fs.promises.FileHandle;
+  // The sidecar now speaks for the custom title, until a newer record lands.
+  if (sidecarChanged) delete e.customTitleRecord;
+  try { fh = await fs.promises.open(fpath, 'r'); } catch { return undefined; }
+  try {
+    let offset = e.scannedBytes;
+    let carry: Buffer = Buffer.alloc(0);
+    const buf = Buffer.alloc(CHUNK_BYTES);
+    while (offset < stat.size) {
+      const { bytesRead } = await fh.read(buf, 0, Math.min(CHUNK_BYTES, stat.size - offset), offset);
+      if (bytesRead <= 0) break;
+      offset += bytesRead;
+      const data = carry.length ? Buffer.concat([carry, buf.subarray(0, bytesRead)]) : buf.subarray(0, bytesRead);
+      const lastNl = data.lastIndexOf(0x0a);
+      if (lastNl < 0) { carry = Buffer.from(data); continue; }
+      const text = data.subarray(0, lastNl).toString('utf8');
+      carry = Buffer.from(data.subarray(lastNl + 1));
+      for (const line of text.split('\n')) if (line) foldLine(e, line);
+      e.scannedBytes = offset - carry.length;
+      await new Promise(r => setImmediate(r));
+    }
+  } finally {
+    await fh.close();
   }
-  const title = firstPrompt.slice(0, 80);
-  return {
-    sessionId,
-    transcriptPath: fpath,
-    cwd,
-    title,
-    customTitle: customTitle !== undefined ? customTitle || undefined : readClaudeCustomTitle(fpath),
-    aiTitle,
-    firstPrompt: firstPrompt.slice(0, MAX_PREVIEW),
-    lastPrompt: (lastPrompt || firstPrompt).slice(0, MAX_PREVIEW),
-    turns,
-    lastModified,
-  };
+
+  e.lastModified = stat.mtimeMs;
+  e.byteSize = stat.size;
+  e.subsessionRole = e.teammate ? 'teammate'
+    : (e.userAssistantCount ?? 0) > 0 && !e.sawMainUser ? 'subagent' : undefined;
+  e.customTitle = e.customTitleRecord !== undefined ? e.customTitleRecord || undefined : readClaudeCustomTitle(fpath);
+  if (!e.firstPrompt) {
+    // Promptless: a titled or large one is still worth listing, a small
+    // untitled one is a sidechain/summary stub.
+    if (stat.size <= STUB_BYTES && !e.customTitle && !e.aiTitle) return undefined;
+    e.title = `session ${sessionId.slice(0, 8)}`;
+  } else {
+    e.title = e.firstPrompt.slice(0, 80);
+  }
+  return e;
+}
+
+function foldLine(e: SessionIndexEntry, line: string): void {
+  e.lineCount++;
+  if (line[0] !== '{') return;
+  if (!e.entrypoint && line.includes('"entrypoint":"')) {
+    e.entrypoint = /"entrypoint":"([^"]*)"/.exec(line)?.[1];
+  }
+  if (!e.cwd && line.includes('"cwd":"')) {
+    const m = CWD_FIELD.exec(line);
+    if (m) { try { e.cwd = JSON.parse(`"${m[1]}"`); } catch { /* malformed */ } }
+  }
+  // Agent-team teammates tag their records with a top-level `agentName` role;
+  // the rename record `agent-name` names the conversation and is not a role.
+  if (!e.teammate && e.lineCount <= TEAMMATE_SCAN_LINES && line.includes('"agentName":"')) {
+    const d = safeParse(line);
+    if (d && d.type !== 'agent-name' && typeof d.agentName === 'string' && d.agentName) e.teammate = true;
+  }
+  if (line.includes('"type":"assistant"')) {
+    e.turns++;
+    e.userAssistantCount = (e.userAssistantCount ?? 0) + 1;
+    return;
+  }
+  if (line.includes('"type":"custom-title"') || line.includes('"type":"ai-title"')) {
+    const d = safeParse(line);
+    if (d?.type === 'custom-title' && typeof d.customTitle === 'string') { e.customTitleRecord = d.customTitle; return; }
+    if (d?.type === 'ai-title' && typeof d.aiTitle === 'string') { e.aiTitle = d.aiTitle; return; }
+  }
+  if (!line.includes('"type":"user"')) return;
+  e.userAssistantCount = (e.userAssistantCount ?? 0) + 1;
+  if (line.includes('"isSidechain":true')) return;
+  e.sawMainUser = true;
+  // Tool results and meta records are user records too, and the bulk of a
+  // transcript: skip them before paying for a parse.
+  if (line.includes('"tool_use_id"') || line.includes('"isMeta":true')) return;
+  const d = safeParse(line);
+  const prompt = d ? extractUserPrompt(d) : '';
+  if (!prompt) return;
+  if (!e.firstPrompt) e.firstPrompt = prompt.slice(0, MAX_PREVIEW);
+  e.lastPrompt = prompt.slice(0, MAX_PREVIEW);
+  e.prompts.push(prompt.slice(0, PROMPT_MAX));
+  if (e.prompts.length > MAX_PROMPTS) e.prompts.splice(Math.floor(MAX_PROMPTS / 2), 1);
 }
 
 function sidecarMtime(transcriptPath: string): number {
   try { return fs.statSync(claudeCustomTitlePath(transcriptPath)).mtimeMs; }
   catch { return 0; }
-}
-
-function readRange(fpath: string, offset: number, length: number): Buffer | undefined {
-  try {
-    const fd = fs.openSync(fpath, 'r');
-    const buf = Buffer.alloc(length);
-    fs.readSync(fd, buf, 0, length, offset);
-    fs.closeSync(fd);
-    return buf;
-  } catch { return undefined; }
 }
 
 function safeParse(line: string): Record<string, unknown> | undefined {
@@ -320,7 +347,8 @@ function extractUserPrompt(data: Record<string, unknown>): string {
       if (block.type === 'text' && typeof block.text === 'string') text += ' ' + block.text;
     }
   }
-  text = text.trim();
+  // What was typed after a local command (`/clear` output, its caveat).
+  text = (unwrapLocalCommand(text.trim()).text ?? '').trim();
   if (!text) return '';
   // Skip command-only messages ("/clear", hook outputs, etc.)
   if (SLASH_CMD_RE.test(text)) return '';
