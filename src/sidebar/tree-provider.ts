@@ -934,6 +934,9 @@ class SessionsTreeProvider
         payload.push({ kind: 'session', hash: i.session.workspaceHash, name: i.session.name });
       } else if (i instanceof GroupTreeItem) {
         payload.push({ kind: 'group', hash: i.workspaceHash, groupId: i.groupId });
+      } else if (i instanceof BranchClusterItem) {
+        // A fork cluster moves as all its forks, in their order.
+        for (const m of i.members) payload.push({ kind: 'session', hash: m.workspaceHash, name: m.name });
       }
     }
     if (payload.length === 0) return;
@@ -979,6 +982,8 @@ class SessionsTreeProvider
     if (!raw.some(r => r.kind === 'session' || r.kind === 'group')) return;
     // The "Sessions" folder holds the workspace root: a drop on it is a drop there.
     if (target instanceof SessionsFolderItem) target = this.lastWorkspaceItems.get(target.workspaceHash);
+    // A fork cluster is a drop on its first fork: same container, same place.
+    const clusterHead = target instanceof BranchClusterItem ? target.members[0] : undefined;
 
     const targetHash = target instanceof SessionTreeItem
       ? target.session.workspaceHash
@@ -986,7 +991,9 @@ class SessionsTreeProvider
         ? target.workspaceHash
         : target instanceof WorkspaceTreeItem
           ? target.workspaceHash
-          : undefined;
+          : target instanceof BranchClusterItem
+            ? target.workspaceHash
+            : undefined;
     if (!targetHash) return;
     if (raw.some(r => r.hash !== targetHash)) {
       vscode.window.showInformationMessage(
@@ -1026,8 +1033,8 @@ class SessionsTreeProvider
         sessionDestGroupId = target.groupId;
         groupDestParent = targetGroupMeta?.parentGroupId;
       }
-    } else if (target instanceof SessionTreeItem) {
-      const sGid = target.session.groupId;
+    } else if (target instanceof SessionTreeItem || clusterHead) {
+      const sGid = target instanceof SessionTreeItem ? target.session.groupId : clusterHead!.groupId;
       const sParent = sGid ? indexGroups[sGid]?.parentGroupId : undefined;
       sessionDestGroupId = sGid;          // join the target session's group (or root)
       groupDestParent = sGid ? sParent : undefined; // groups become siblings of that group
@@ -1118,6 +1125,7 @@ class SessionsTreeProvider
     let targetKey: string | undefined;
     if (target instanceof SessionTreeItem) targetKey = `s:${target.session.name}`;
     else if (target instanceof GroupTreeItem) targetKey = `g:${target.groupId}`;
+    else if (clusterHead) targetKey = `s:${clusterHead.name}`;
     // When dropping INTO a master, targetKey (the master) isn't a child of the
     // reorder container, so it won't be found below → dragged items append.
     if (targetKey && !draggedKeys.has(targetKey)) {
