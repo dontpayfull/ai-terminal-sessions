@@ -11,7 +11,17 @@ import { ClaudeTracker } from '../claude-tracker';
 import { TagsFolderItem, TagTreeItem, TagSeparatorItem, TagView, tagMemberPrefix, tagOfMemberRow } from './tag-items';
 import { tagEntries, toLayout, layoutKey, moveInLayout } from '../tags';
 
+import { dropInsertIndex, uniqueDragEntries, withSetMates } from './drop-order';
+
+/** The group a session is drawn in, undefined for the workspace root: a
+ *  stale group, or a master (which holds only groups), counts as the root. */
+function sessionContainer(s: { groupId?: string }, groups: Record<string, { kind?: string }>): string | undefined {
+  const g = s.groupId ? groups[s.groupId] : undefined;
+  return g && g.kind !== 'master' ? s.groupId : undefined;
+}
+
 const DRAG_MIME = 'application/vnd.code.tree.terminalsessions';
+
 
 /** Follow Conversation Title: the title a session row shows (title-follow.ts). */
 let sidebarTitle: ((sessionName: string) => string | undefined) | undefined;
@@ -936,11 +946,26 @@ class SessionsTreeProvider
         payload.push({ kind: 'group', hash: i.workspaceHash, groupId: i.groupId });
       } else if (i instanceof BranchClusterItem) {
         // A fork cluster moves as all its forks, in their order.
-        for (const m of i.members) payload.push({ kind: 'session', hash: m.workspaceHash, name: m.name });
+        for (const m of this.clusterSessions(i)) payload.push({ kind: 'session', hash: m.workspaceHash, name: m.name });
       }
     }
     if (payload.length === 0) return;
-    dataTransfer.set(DRAG_MIME, new vscode.DataTransferItem(payload));
+    dataTransfer.set(DRAG_MIME, new vscode.DataTransferItem(uniqueDragEntries(payload)));
+  }
+
+  /** A cluster's forks in its container: the shown ones in their order, then
+   *  any a running/stopped filter hides, so a drag never splits the set. */
+  private clusterSessions(c: BranchClusterItem): SessionInfo[] {
+    const all = this.lastWorkspaceItems.get(c.workspaceHash)?.allSessions;
+    if (!all || c.members.length === 0) return c.members;
+    const groups = this.index.getGroups(c.workspaceHash);
+    const home = sessionContainer(c.members[0], groups);
+    const shown = new Set(c.members.map(m => m.name));
+    const hidden = all.filter(s => s.branchSetId === c.branchSetId && !shown.has(s.name) && sessionContainer(s, groups) === home);
+    if (hidden.length === 0) return c.members;
+    // Hidden ones take their saved place among the shown ones.
+    const key = (s: SessionInfo): number => s.sortOrder ?? Number.MAX_SAFE_INTEGER;
+    return [...c.members, ...hidden].sort((a, b) => key(a) - key(b));
   }
 
   /**
@@ -967,8 +992,9 @@ class SessionsTreeProvider
     interface DragGroup { kind: 'group'; hash: string; groupId: string }
     interface DragTagSeparator { kind: 'tagSep'; hash: string; tagId: string; sepId: string }
     type Payload = DragSession | DragGroup | DragTagSeparator;
-    const raw = item.value as Payload[];
-    if (!Array.isArray(raw) || raw.length === 0) return;
+    if (!Array.isArray(item.value)) return;
+    const raw = uniqueDragEntries(item.value as Payload[]);
+    if (raw.length === 0) return;
     // Inside a tag: add and reorder in the tag's own order, nothing else moves.
     const tagTarget = target instanceof TagTreeItem ? { tagId: target.tag.id, key: undefined }
       : target instanceof TagSeparatorItem ? { tagId: target.tagId, key: `p:${target.sepId}` }
@@ -1044,6 +1070,18 @@ class SessionsTreeProvider
       groupDestParent = undefined;
     }
 
+    // Rows already in the destination container: only their old place says
+    // whether the drag went up or down (sort numbers from another container
+    // mean nothing here).
+    const stayed = new Set<string>([
+      ...sessions
+        .filter(s => sessionContainer(this.index.getSessionMeta(targetHash, s.name) ?? {}, indexGroups) === sessionDestGroupId)
+        .map(s => `s:${s.name}`),
+      ...groups
+        .filter(g => (indexGroups[g.groupId]?.parentGroupId ?? undefined) === groupDestParent)
+        .map(g => `g:${g.groupId}`),
+    ]);
+
     // ── Apply parent/group changes ────────────────────────────────────────
     if (draggingGroups) {
       // Masters hold only groups; re-parent each dragged group/master.
@@ -1103,7 +1141,7 @@ class SessionsTreeProvider
         // Root also holds ungrouped sessions.
         if (containerId === undefined) {
           for (const s of wsSessions) {
-            if (s.groupId && freshGroups[s.groupId]) continue;
+            if (sessionContainer(s, freshGroups) !== undefined) continue;
             list.push({ key: `s:${s.name}`, isGroup: false, sortOrder: s.sortOrder ?? Number.MAX_SAFE_INTEGER, session: s });
           }
         }
@@ -1113,38 +1151,37 @@ class SessionsTreeProvider
     };
 
     const destChildren = buildChildList(reorderContainer);
-    const draggedKeys = new Set<string>([
-      ...sessions.map(s => `s:${s.name}`),
-      ...groups.map(g => `g:${g.groupId}`),
-    ]);
+    const targetSetId = target instanceof BranchClusterItem ? target.branchSetId
+      : target instanceof SessionTreeItem ? target.session.branchSetId : undefined;
+    const rawKeys = raw.flatMap(r => (r.kind === 'session' ? [`s:${r.name}`] : r.kind === 'group' ? [`g:${r.groupId}`] : []));
+    // Forks of a dragged set already here move along, so the set stays in one
+    // piece (the sidebar folds it into one row at its first fork).
+    const draggedOrder = withSetMates(
+      destChildren.map(c => ({ key: c.key, setId: c.session?.branchSetId })),
+      rawKeys, targetSetId,
+    );
+    const draggedKeys = new Set<string>(draggedOrder);
+    for (const k of draggedOrder) if (!rawKeys.includes(k)) stayed.add(k);
 
     const draggedChildren = destChildren.filter(c => draggedKeys.has(c.key));
     const rest = destChildren.filter(c => !draggedKeys.has(c.key));
 
-    let insertIdx = rest.length;
+    let insertIdx: number;
     let targetKey: string | undefined;
     if (target instanceof SessionTreeItem) targetKey = `s:${target.session.name}`;
     else if (target instanceof GroupTreeItem) targetKey = `g:${target.groupId}`;
     else if (clusterHead) targetKey = `s:${clusterHead.name}`;
-    // When dropping INTO a master, targetKey (the master) isn't a child of the
-    // reorder container, so it won't be found below → dragged items append.
-    if (targetKey && !draggedKeys.has(targetKey)) {
-      const tIdxFull = destChildren.findIndex(c => c.key === targetKey);
-      const firstDraggedIdxFull = destChildren.findIndex(c => draggedKeys.has(c.key));
-      const draggingDown = firstDraggedIdxFull >= 0 && firstDraggedIdxFull < tIdxFull;
-      const tIdxRest = rest.findIndex(c => c.key === targetKey);
-      if (tIdxRest >= 0) insertIdx = draggingDown ? tIdxRest + 1 : tIdxRest;
-    }
+    insertIdx = dropInsertIndex(
+      destChildren.map(c => ({ key: c.key, setId: c.session?.branchSetId })),
+      draggedKeys, targetKey, targetSetId, stayed,
+    );
 
-    // Re-collect the dragged children IN THE ORDER they appear in raw, so a
-    // multi-select drag preserves the user's pick order.
-    const draggedInOrder: Child[] = [];
-    for (const r of raw) {
-      if (r.kind === 'tagSep') continue;
-      const k = r.kind === 'session' ? `s:${r.name}` : `g:${r.groupId}`;
+    // The dragged children in pick order (set mates next to their set), so a
+    // multi-select drag keeps the user's order.
+    const draggedInOrder: Child[] = draggedOrder.flatMap(k => {
       const c = draggedChildren.find(x => x.key === k);
-      if (c) draggedInOrder.push(c);
-    }
+      return c ? [c] : [];
+    });
     const reordered = [...rest.slice(0, insertIdx), ...draggedInOrder, ...rest.slice(insertIdx)];
 
     // Persist new sortOrder: integers 0..N-1 within the destination container.

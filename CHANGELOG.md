@@ -4,6 +4,20 @@ All notable changes to the Terminal Sessions extension.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project uses semantic versioning once past 1.0.0.
 
+## [0.43.0] — 2026-11-05
+
+### Added
+
+- **Drag a fork cluster as one row.** Dragging the ⑂ row moves all its forks, in their order, into a group, to the workspace root, or next to another session. Forks hidden by the running/stopped filter move with it, so the set never splits.
+
+### Fixed
+
+- Dropping rows on themselves (a session, a fork cluster on its own row or on one of its forks) no longer moves them to the end of the list.
+- A row dropped on a fork cluster, or on one of its forks, goes before or after the whole cluster, never between its forks.
+- Rows dragged in from another group land before the drop target, instead of a side picked from the old group's order.
+- A fork selected together with its cluster moves once, so the forks keep their order.
+- Forks of the same set already in the destination group join the moved forks, so the cluster stays in one piece.
+
 ## [0.42.0] — 2026-11-01
 
 ### Added
