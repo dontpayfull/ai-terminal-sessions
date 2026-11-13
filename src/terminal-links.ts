@@ -114,7 +114,9 @@ async function openResolved(resolved: Resolved, line?: number | null, col?: numb
     const pos = new vscode.Position(Math.max(0, line - 1), Math.max(0, (col || 1) - 1));
     opts.selection = new vscode.Range(pos, pos);
   }
-  await vscode.window.showTextDocument(uri, opts);
+  // `vscode.open` picks the editor for the file type: an image or a PDF opens
+  // in its preview. showTextDocument refuses binary files ("cannot open").
+  await vscode.commands.executeCommand('vscode.open', uri, opts);
 }
 
 // Wrapped-tail rescue: the fragment on a continuation row is the TAIL of a
