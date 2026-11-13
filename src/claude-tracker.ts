@@ -1081,10 +1081,12 @@ export class ClaudeTracker {
       // source ships with the extension. Hand it a reader here so the provider
       // stays free of the extension context.
       const pluginSrc = path.join(this.ctx.extensionPath, 'media', 'opencode-plugin.js');
-      setOpencodePluginSource(() => {
-        try { return fs.readFileSync(pluginSrc, 'utf8'); }
+      const pluginV2Src = path.join(this.ctx.extensionPath, 'media', 'opencode-plugin-v2-tui.js');
+      const reader = (file: string) => () => {
+        try { return fs.readFileSync(file, 'utf8'); }
         catch { return undefined; }
-      });
+      };
+      setOpencodePluginSource(reader(pluginSrc), reader(pluginV2Src));
     } catch (e) {
       console.error('[terminal-sessions] claude-tracker ensureFiles:', e);
     }

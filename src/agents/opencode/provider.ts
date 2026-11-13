@@ -26,6 +26,13 @@ const CONFIG_DIR = process.env.XDG_CONFIG_HOME
 /** The one file we install. OpenCode loads every `plugin/*.{js,ts}` in its
  *  config dir as a plugin, so nothing in opencode.json needs to change. */
 export const PLUGIN_PATH = path.join(CONFIG_DIR, 'plugin', 'terminal-sessions.js');
+/** OpenCode 2 does not run 1.x plugins, and its server is a background service
+ *  shared by every terminal, so the 2.x plugin is a TUI part: a directory under
+ *  `plugins/` holding `tui.js`. 1.x only loads direct files and ignores it; 2.x
+ *  logs one warning for the 1.x file and moves on. Both are installed, so the
+ *  integration survives an upgrade (or a downgrade) of OpenCode itself. */
+export const PLUGIN_V2_DIR = path.join(CONFIG_DIR, 'plugins', 'terminal-sessions');
+export const PLUGIN_V2_PATH = path.join(PLUGIN_V2_DIR, 'tui.js');
 /** Where our plugin writes the per-conversation JSONL we tail. */
 export const TRANSCRIPT_DIR = path.join(os.homedir(), '.terminal-sessions', 'opencode');
 
@@ -37,14 +44,57 @@ const HOOK_VERSION_RE = /^\/\/ @terminal-sessions-hook-version (\d+)/m;
 // recorded directory instead). `--auto` is the auto-approve switch; `--yolo`
 // and `--dangerously-skip-permissions` are its hidden aliases.
 const OPENCODE_FLAGS: FlagSpec = {
-  bool: ['--auto', '--yolo', '--dangerously-skip-permissions', '--mini', '--pure'],
+  // `--standalone` / `--server` are OpenCode 2 (private or remote server
+  // instead of the background service); 2.x dropped `--model` and `--agent`
+  // from the TUI, and argv only ever carries what the running binary accepted.
+  bool: ['--auto', '--yolo', '--dangerously-skip-permissions', '--mini', '--pure', '--standalone'],
   value: {
     '--model': {},
     '--agent': {},
     '--log-level': {},
+    '--server': {},
   },
   alias: { '-m': '--model' },
 };
+
+/** Launch flags the OpenCode 2 TUI accepts, from a captured set that may come
+ *  from a 1.x process (2.x dropped `--model`, `--agent`, `--mini`, `--pure`,
+ *  and knows only `--auto` for auto-approve). */
+const V2_BOOL = new Set(['--auto', '--standalone']);
+const V2_VALUE = new Set(['--server', '--log-level']);
+const V2_AUTO_ALIAS = new Set(['--yolo', '--dangerously-skip-permissions']);
+function v2Flags(flags: readonly string[] | undefined): string[] {
+  const out: string[] = [];
+  const list = flags ?? [];
+  for (let i = 0; i < list.length; i++) {
+    const f = list[i];
+    const eq = f.indexOf('=');
+    const name = eq > 0 ? f.slice(0, eq) : f;
+    if (V2_AUTO_ALIAS.has(name)) { if (!out.includes('--auto')) out.push('--auto'); continue; }
+    if (V2_BOOL.has(name)) { if (!out.includes(name)) out.push(name); continue; }
+    const takesValue = name in (OPENCODE_FLAGS.value ?? {});
+    if (V2_VALUE.has(name)) {
+      out.push(f);
+      if (eq < 0 && i + 1 < list.length) out.push(list[++i]);
+    } else if (takesValue && eq < 0) {
+      i++;   // skip the value of a flag 2.x does not have
+    }
+  }
+  return out;
+}
+/** The server-selection flags of a 2.x flag set (`opencode api` takes them too). */
+function serverFlags(flags: readonly string[]): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < flags.length; i++) {
+    const name = flags[i].split('=')[0];
+    if (name === '--standalone') out.push(flags[i]);
+    else if (name === '--server') {
+      out.push(flags[i]);
+      if (!flags[i].includes('=') && i + 1 < flags.length) out.push(flags[++i]);
+    }
+  }
+  return out;
+}
 
 // The plugin emits Claude-Code hook names, so the tracker needs no OpenCode branch.
 const OPENCODE_HOOK_EVENTS = [
@@ -58,11 +108,11 @@ const OPENCODE_HOOK_EVENTS = [
 ] as const;
 
 /** Reads the version marker of an installed plugin file, 0 when absent/foreign. */
-function installedPluginVersion(): number {
+function installedPluginVersion(file: string = PLUGIN_PATH): number {
   let head: string;
   let fd: number | undefined;
   try {
-    fd = fs.openSync(PLUGIN_PATH, 'r');
+    fd = fs.openSync(file, 'r');
     const b = Buffer.alloc(512);
     const n = fs.readSync(fd, b, 0, 512, 0);
     head = b.toString('utf8', 0, n);
@@ -76,8 +126,28 @@ function installedPluginVersion(): number {
  *  the forwarder path (…/.terminal-sessions/agent-hook.sh) at install time so
  *  the provider stays free of the VS Code extension context. */
 let bundledPluginSource: (() => string | undefined) | undefined;
-export function setOpencodePluginSource(reader: () => string | undefined): void {
+let bundledPluginV2Source: (() => string | undefined) | undefined;
+export function setOpencodePluginSource(
+  reader: () => string | undefined,
+  readerV2?: () => string | undefined,
+): void {
   bundledPluginSource = reader;
+  bundledPluginV2Source = readerV2;
+}
+
+/** Write one plugin file atomically. Only ever replaces a file that is ours
+ *  (marker in the head) or absent. */
+function writePluginFile(file: string, src: string): boolean {
+  try {
+    if (fs.existsSync(file) && installedPluginVersion(file) === 0) return false;
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const tmp = `${file}.${process.pid}.tmp`;
+    fs.writeFileSync(tmp, src, { mode: 0o644 });
+    fs.renameSync(tmp, file);
+    return true;
+  } catch {
+    return false;
+  }
 }
 function bundledPluginVersion(src: string): number {
   const m = src.match(HOOK_VERSION_RE);
@@ -119,39 +189,50 @@ export const opencodeProvider: AgentProvider = {
   installHook(_forwarderPath: string): Promise<boolean> {
     const src = bundledPluginSource?.();
     if (!src) return Promise.resolve(false);
-    try {
-      // Only ever replace a file that is ours (marker in the head) or absent.
-      if (fs.existsSync(PLUGIN_PATH) && installedPluginVersion() === 0) return Promise.resolve(false);
-      fs.mkdirSync(path.dirname(PLUGIN_PATH), { recursive: true });
-      const tmp = `${PLUGIN_PATH}.${process.pid}.tmp`;
-      fs.writeFileSync(tmp, src, { mode: 0o644 });
-      fs.renameSync(tmp, PLUGIN_PATH);
-      return Promise.resolve(true);
-    } catch {
-      return Promise.resolve(false);
-    }
+    // The two parts are independent: a foreign or unwritable file at one path
+    // must not keep the other major version of OpenCode untracked.
+    const ok = writePluginFile(PLUGIN_PATH, src);
+    const srcV2 = bundledPluginV2Source?.();
+    const okV2 = srcV2 ? writePluginFile(PLUGIN_V2_PATH, srcV2) : false;
+    return Promise.resolve(ok || okV2);
   },
 
   uninstallHook(): Promise<boolean> {
     try {
-      if (installedPluginVersion() === 0) return Promise.resolve(false);
-      fs.unlinkSync(PLUGIN_PATH);
-      return Promise.resolve(true);
+      const hadV1 = installedPluginVersion() > 0;
+      const hadV2 = installedPluginVersion(PLUGIN_V2_PATH) > 0;
+      if (!hadV1 && !hadV2) return Promise.resolve(false);
+      if (hadV2) {
+        try { fs.unlinkSync(PLUGIN_V2_PATH); } catch { /* reported below */ }
+        try { fs.rmdirSync(PLUGIN_V2_DIR); } catch { /* not empty: never a user's files */ }
+      }
+      if (hadV1) {
+        try { fs.unlinkSync(PLUGIN_PATH); } catch { /* reported below */ }
+      }
+      // Success only when no plugin of ours is left behind to keep running.
+      return Promise.resolve(installedPluginVersion() === 0 && installedPluginVersion(PLUGIN_V2_PATH) === 0);
     } catch {
       return Promise.resolve(false);
     }
   },
 
   isHookInstalled(): boolean {
-    return installedPluginVersion() > 0;
+    // Either part counts: an OpenCode 2 user may have removed the 1.x file.
+    return installedPluginVersion() > 0 || installedPluginVersion(PLUGIN_V2_PATH) > 0;
   },
 
   needsHookUpgrade(): boolean {
     const installed = installedPluginVersion();
-    if (installed === 0) return false;
+    const installedV2 = installedPluginVersion(PLUGIN_V2_PATH);
+    if (installed === 0 && installedV2 === 0) return false;
     const src = bundledPluginSource?.();
-    if (!src) return false;
-    return bundledPluginVersion(src) > installed;
+    if (src && installed > 0 && bundledPluginVersion(src) > installed) return true;
+    const srcV2 = bundledPluginV2Source?.();
+    if (!srcV2) return false;
+    if (installedV2 > 0) return bundledPluginVersion(srcV2) > installedV2;
+    // Installs that predate OpenCode 2 support get the 2.x part the same way.
+    // A foreign file at that path is left alone (and is not ours to upgrade).
+    return installed > 0 && !fs.existsSync(PLUGIN_V2_PATH);
   },
 
   isValidSessionId(id: string): boolean {
@@ -212,12 +293,26 @@ export const opencodeProvider: AgentProvider = {
   ): string {
     // `--fork` with `-s` branches the conversation into a NEW session id
     // ("<title> (fork #N)") and opens that, so both branches can run live.
+    // OpenCode 2 has no such flag on the TUI: the fork is made through the
+    // server API and the new id is opened. Which binary the pane will run is
+    // only known in the pane, so the shell picks the form there.
     const recorded = (transcriptPath ? readOpencodeTranscriptCwd(transcriptPath) : undefined)
       ?? opencodeSessionDirectory(sessionId);
-    const base = recorded && recorded !== terminalCwd
-      ? `cd ${posixQuote(recorded)} && opencode -s ${posixQuote(sessionId)} --fork`
-      : `opencode -s ${posixQuote(sessionId)} --fork`;
-    return withFlags(base, extraFlags, OPENCODE_FLAGS);
+    const id = posixQuote(sessionId);
+    const v1 = withFlags(`opencode -s ${id} --fork`, extraFlags, OPENCODE_FLAGS);
+    const flagsV2 = v2Flags(extraFlags);
+    const v2 = withFlags('opencode -s "$f"', flagsV2, OPENCODE_FLAGS);
+    // The fork must be made on the server the TUI will then open it on.
+    const api = withFlags('opencode api session.fork', serverFlags(flagsV2), OPENCODE_FLAGS);
+    // First `"id"` of the reply is the new session's (`data.id`); the pattern
+    // does not depend on the JSON being compact or on one line.
+    const fork = `${api} --param sessionID=${id} -d '{}'`
+      + ` | grep -o '"id" *: *"ses_[0-9A-Za-z]*"' | head -1 | grep -o 'ses_[0-9A-Za-z]*'`;
+    const failed = `echo 'Terminal Sessions: OpenCode could not fork this conversation' >&2`;
+    const branch = `case "$(opencode --version 2>/dev/null)" in`
+      + ` *v2.*|2.*) f=$(${fork}); if [ -n "$f" ]; then ${v2}; else ${failed}; fi ;;`
+      + ` *) ${v1} ;; esac`;
+    return recorded && recorded !== terminalCwd ? `cd ${posixQuote(recorded)} && ${branch}` : branch;
   },
 
   listSessions(cwd?: string): AgentSessionSummary[] {

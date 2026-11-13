@@ -24,6 +24,12 @@ import * as path from 'path';
 // Messages live in `message` + `part` (`data` JSON); a newer `session_message`
 // table exists but is not the CLI's write path yet — we probe before relying on
 // either, so a future flip degrades to "no preview" instead of an empty picker.
+//
+// OpenCode 2 (v2.3) moved on: sessions are in `session_v2` (same columns we
+// read; `title` is NULL until the first rename) and prompts in
+// `session_message` (`type` = 'user', `data` JSON with `text`). The old
+// `session` table is gone from a fresh 2.x database, and after an upgrade it is
+// no longer written, so `session_v2` wins whenever it exists.
 
 const DATA_DIR = process.env.XDG_DATA_HOME
   ? path.join(process.env.XDG_DATA_HOME, 'opencode')
@@ -115,16 +121,26 @@ function likeUnder(base: string): string {
   return base.replace(/[\\%_]/g, '\\$&') + '/%';
 }
 
-/** Tables present in the db (cached per path for the extension's lifetime;
- *  a schema flip needs an OpenCode upgrade, which needs a restart anyway). */
-const tableCache = new Map<string, Set<string>>();
+/** Tables present in the db, cached per path for a few seconds (one picker
+ *  open runs several queries): the schema only changes when OpenCode itself is
+ *  upgraded (1.x → 2.x replaces `session` with `session_v2`), and that must be
+ *  noticed without an editor restart. */
+const TABLES_TTL_MS = 10_000;
+const tableCache = new Map<string, { at: number; set: Set<string> }>();
 function tablesOf(dbPath: string): Set<string> {
   const hit = tableCache.get(dbPath);
-  if (hit) return hit;
+  if (hit && Date.now() - hit.at < TABLES_TTL_MS) return hit.set;
   const rows = querySqlite<{ name: string }>(dbPath, "SELECT name FROM sqlite_master WHERE type='table'");
   const set = new Set(rows.map(r => r.name));
-  if (set.size) tableCache.set(dbPath, set);
+  if (set.size) tableCache.set(dbPath, { at: Date.now(), set });
   return set;
+}
+
+/** The table sessions live in: `session_v2` on OpenCode 2, `session` on 1.x. */
+function sessionTable(tables: Set<string>): 'session_v2' | 'session' | undefined {
+  if (tables.has('session_v2')) return 'session_v2';
+  if (tables.has('session')) return 'session';
+  return undefined;
 }
 
 export interface OpencodeSessionRow {
@@ -147,17 +163,18 @@ export function listOpencodeSessions(cwd?: string, limit = 200): OpencodeSession
   const db = opencodeDbPath();
   if (!db) return [];
   const tables = tablesOf(db);
-  if (!tables.has('session')) return [];
+  const table = sessionTable(tables);
+  if (!table) return [];
   const where = ['parent_id IS NULL', 'time_archived IS NULL'];
   if (cwd) {
     const base = cwd.replace(/\/+$/, '');
     where.push(`(directory = ${sqlString(base)} OR directory LIKE ${sqlString(likeUnder(base))} ESCAPE '\\')`);
   }
   const rows = querySqlite<{
-    id: string; directory: string; title: string; agent: string | null; model: string | null;
+    id: string; directory: string; title: string | null; agent: string | null; model: string | null;
     cost: number; time_created: number; time_updated: number;
   }>(db, `SELECT id, directory, title, agent, model, cost, time_created, time_updated
-          FROM session WHERE ${where.join(' AND ')}
+          FROM ${table} WHERE ${where.join(' AND ')}
           ORDER BY time_updated DESC LIMIT ${Math.max(1, Math.min(limit, 1000))}`);
   const out: OpencodeSessionRow[] = rows
     .filter(r => typeof r.id === 'string' && r.id.startsWith('ses_'))
@@ -172,7 +189,7 @@ export function listOpencodeSessions(cwd?: string, limit = 200): OpencodeSession
       return {
         id: r.id,
         directory: r.directory,
-        title: r.title,
+        title: typeof r.title === 'string' ? r.title : '',
         agent: r.agent ?? undefined,
         model,
         cost: typeof r.cost === 'number' ? r.cost : 0,
@@ -183,7 +200,22 @@ export function listOpencodeSessions(cwd?: string, limit = 200): OpencodeSession
 
   // First user prompt per session, one batched query against the V1 tables.
   // Skipped when the schema has moved on — the title still identifies the row.
-  if (out.length && tables.has('message') && tables.has('part')) {
+  if (out.length && table === 'session_v2' && tables.has('session_message')) {
+    const ids = out.map(r => sqlString(r.id)).join(',');
+    const previews = querySqlite<{ session_id: string; t: string | null }>(db,
+      // SQLite takes the bare column from the row that holds MIN(seq); prompts
+      // with no text (attachment only) are skipped so the preview is never empty.
+      `SELECT session_id, json_extract(data,'$.text') AS t, MIN(seq)
+         FROM session_message
+        WHERE session_id IN (${ids}) AND type = 'user'
+          AND COALESCE(json_extract(data,'$.text'), '') <> ''
+        GROUP BY session_id`);
+    const byId = new Map(previews.map(p => [p.session_id, p.t ?? undefined]));
+    for (const r of out) {
+      const t = byId.get(r.id);
+      if (t) r.firstUserMessage = t.replace(/\s+/g, ' ').trim().slice(0, 200);
+    }
+  } else if (out.length && tables.has('message') && tables.has('part')) {
     const ids = out.map(r => sqlString(r.id)).join(',');
     const previews = querySqlite<{ session_id: string; t: string | null }>(db,
       `SELECT p.session_id AS session_id, json_extract(p.data,'$.text') AS t, MIN(p.id)
@@ -206,8 +238,10 @@ export function opencodeSessionDirectory(sessionId: string): string | undefined 
   if (!OPENCODE_SESSION_ID_RE.test(sessionId)) return undefined;
   const db = opencodeDbPath();
   if (!db) return undefined;
+  const table = sessionTable(tablesOf(db));
+  if (!table) return undefined;
   const rows = querySqlite<{ directory: string }>(db,
-    `SELECT directory FROM session WHERE id = ${sqlString(sessionId)} LIMIT 1`);
+    `SELECT directory FROM ${table} WHERE id = ${sqlString(sessionId)} LIMIT 1`);
   const d = rows[0]?.directory;
   return typeof d === 'string' && d.startsWith('/') ? d : undefined;
 }
