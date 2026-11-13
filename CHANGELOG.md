@@ -4,6 +4,24 @@ All notable changes to the Terminal Sessions extension.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project uses semantic versioning once past 1.0.0.
 
+## [Unreleased]
+
+### Added
+
+- **OpenCode 2 support.** OpenCode 2 does not run 1.x plugins and moved its server into a background service shared by every terminal, so live state, the transcript and Follow title stopped working ([#6](https://github.com/dontpayfull/ai-terminal-sessions/issues/6)). The extension now also installs a TUI plugin part (`~/.config/opencode/plugins/terminal-sessions/tui.js`) that runs inside the `opencode` process of each terminal and reports only the conversation that terminal shows. The 1.x plugin file stays in place, so both major versions work and an OpenCode upgrade needs no action. Existing hook installs get the new part on the next editor start.
+- The Search & Resume picker reads OpenCode 2's database (`session_v2`), and Fork works on OpenCode 2 through its server API.
+
+- **Follow Conversation Title: a way out when Claude Code writes no titles.** Since Claude Code 2.1.316 the setting `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` also turns off the generated conversation title, so followed sessions kept their own name. When Follow Conversation Title is turned on (and once at startup when it already is), the extension looks for that setting in `~/.claude/settings.json` and in the workspace's `.claude/settings.json` / `.claude/settings.local.json` and asks what to do: **Turn On Titles** replaces it with the four separate switches it stands for (`DISABLE_TELEMETRY`, `DISABLE_ERROR_REPORTING`, `DISABLE_BUG_COMMAND`, `DISABLE_AUTOUPDATER`), **Show the Setting** opens the file at that line, **Use First Prompt Instead** leaves it alone and stops asking. A setting that comes from a shell export is reported with steps to copy, since the extension does not edit shell profiles.
+- Follow Conversation Title falls back to the conversation's first prompt when the agent never wrote a title (after 45 seconds for a running conversation, at once for a stopped one).
+
+### Fixed
+
+- Clicking a path link to an image, a PDF or another binary file opens it in its preview instead of failing with "cannot open".
+
+### Known limits
+
+- On OpenCode 2 only the interactive TUI is tracked: `opencode run` and the desktop app load no TUI plugin.
+
 ## [0.43.0] — 2026-11-05
 
 ### Added

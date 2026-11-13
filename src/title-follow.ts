@@ -13,6 +13,7 @@ import { PARKED_PREFIX } from './profile-provider';
 import { isWalkingTabs, runTabWalk } from './tab-order';
 import type { TerminalTracker } from './terminal-tracker';
 import type { SessionLabel } from './types';
+import { firstPromptTitle } from './title-first-prompt';
 
 // Follow Conversation Title (opt-in): a session shows the title of the
 // conversation running in it, the one the agent generated or the one set with
@@ -28,6 +29,8 @@ import type { SessionLabel } from './types';
 //     the previous tab and editor back and stops the moment the window is
 //     focused again;
 //   - Re-attach / Restart All, and any reopen, name the new tab from the start.
+// A conversation the agent never titled shows its first prompt instead (after
+// a short wait while it runs: see title-first-prompt.ts).
 // A session you named keeps its name; only unnamed ones follow, unless you
 // choose Follow Conversation Title Again on a named one.
 
@@ -80,6 +83,10 @@ export interface TitleCache {
   recordCustom?: string;
   /** A custom-title record was seen, an empty one (a cleared /rename) too. */
   recordSeen?: boolean;
+  /** The first prompt, the stand-in for a missing title (title-first-prompt.ts). */
+  first?: string;
+  firstAt?: number;
+  firstReadAt?: number;
 }
 
 /** Seconds since the last keyboard or mouse input, macOS only. */
@@ -137,7 +144,7 @@ export async function scanTitles(tp: string, c: TitleCache, st: fs.Stats, agent:
   c.reading = true;
   try {
     // Rewritten or truncated: start over.
-    if (st.size < c.offset) { c.offset = 0; c.custom = undefined; c.recordCustom = undefined; c.recordSeen = undefined; c.auto = undefined; }
+    if (st.size < c.offset) { c.offset = 0; c.custom = undefined; c.recordCustom = undefined; c.recordSeen = undefined; c.auto = undefined; c.first = undefined; c.firstAt = undefined; c.firstReadAt = undefined; }
     const fh = await fs.promises.open(tp, 'r');
     try {
       let carry: Buffer = Buffer.alloc(0);
@@ -348,7 +355,7 @@ export class TitleFollower implements vscode.Disposable {
     if (!tp) return false;
     const c = await this.readTitles(tp, ref.agent);
     const title = cleanTitle(conversationTitle(
-      { sessionId: ref.id, customTitle: c?.custom, autoTitle: c?.auto },
+      { sessionId: ref.id, customTitle: c?.custom, autoTitle: c?.auto, firstUserMessage: this.firstPrompt(tp, ref.agent, c, true) },
       id => (id ? this.index.getSessionName(id) : undefined),
       200,
     ).title);
@@ -375,10 +382,16 @@ export class TitleFollower implements vscode.Disposable {
     if (!snap || snap.state === 'none' || !tp) return undefined;
     const c = await this.readTitles(tp, snap.agent ?? 'claude');
     return cleanTitle(conversationTitle(
-      { sessionId: snap.sessionId ?? '', customTitle: c?.custom, autoTitle: c?.auto },
+      { sessionId: snap.sessionId ?? '', customTitle: c?.custom, autoTitle: c?.auto, firstUserMessage: this.firstPrompt(tp, snap.agent ?? 'claude', c, false) },
       id => (id ? this.index.getSessionName(id) : undefined),
       200,
     ).title);
+  }
+
+  /** The first prompt of an untitled conversation, the title of last resort. */
+  private firstPrompt(tp: string, agent: string, c: TitleCache | undefined, immediate: boolean): string | undefined {
+    if (!c) return undefined;
+    return firstPromptTitle(c, () => this.registry.getProvider(agent)?.readTranscriptSummary?.(tp)?.firstUserMessage, Date.now(), immediate);
   }
 
   private async readTitles(tp: string, agent: string): Promise<TitleCache | undefined> {

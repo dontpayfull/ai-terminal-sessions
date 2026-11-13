@@ -8,6 +8,7 @@ import { conversationTitle } from './conversation-title';
 import { archivedFromEntry } from './conversation-search';
 import { cleanTitle } from './title-follow';
 import { TitleFollower } from './title-follow';
+import { maybeOfferTitleFix } from './title-traffic-prompt';
 import { StatusBar } from './status-bar';
 import { maybePromptResume } from './toast';
 import { TerminalTracker } from './terminal-tracker';
@@ -124,6 +125,7 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   // Follow Conversation Title (off by default): rows and tabs show the title
   // of the conversation running in each session.
   const titles = new TitleFollower(index, claudeTracker, registry, tracker, refreshSidebar);
+  if (getConfig().followConversationTitle) void maybeOfferTitleFix(ctx, 'startup');
   setSidebarTitleSource(n => titles.titleFor(n));
   // A session's last Claude conversation title, from the search index.
   setConversationTitleSource(n => {
@@ -218,6 +220,11 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
         e.affectsConfiguration('terminalSessions.claudeSidebarDetails') ||
         e.affectsConfiguration('terminalSessions.followConversationTitle')
       ) { void syncSpecialFolderContexts(); refreshSidebar(); }
+      // Follow Conversation Title just turned on (command or Settings UI): say
+      // so when Claude Code is told not to write the titles it follows.
+      if (e.affectsConfiguration('terminalSessions.followConversationTitle') && getConfig().followConversationTitle) {
+        void maybeOfferTitleFix(ctx, 'enabled');
+      }
       if (e.affectsConfiguration('terminalSessions.brandedNotifier')) onNotifierSettingChanged();
       if (e.affectsConfiguration('terminalSessions.claudeNoFlicker')) {
         void applyNoFlickerChange();

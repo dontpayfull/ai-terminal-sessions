@@ -275,7 +275,7 @@
         "terminalSessions.followConversationTitle": {
           "type": "boolean",
           "default": false,
-          "description": "Experimental. Each running session's sidebar row and terminal tab show the title of the conversation in it (the agent's generated title, or one set with its own /rename), updated as it changes. The sidebar follows at once. VS Code renames only the active tab, so a tab in the background takes its new title when you open it, or (macOS) when the window has had no focus and no key or mouse input for a minute. A name you give a session with Rename keeps it; clearing the name, or Follow Conversation Title Again, goes back to following. The tmux session is never renamed."
+          "description": "Experimental. Each running session's sidebar row and terminal tab show the title of the conversation in it (the agent's generated title, or one set with its own /rename), updated as it changes. A conversation the agent never titled shows its first prompt. The sidebar follows at once. VS Code renames only the active tab, so a tab in the background takes its new title when you open it, or (macOS) when the window has had no focus and no key or mouse input for a minute. A name you give a session with Rename keeps it; clearing the name, or Follow Conversation Title Again, goes back to following. The tmux session is never renamed."
         },
         "terminalSessions.showCompletedSubagents": {
           "type": "boolean",
