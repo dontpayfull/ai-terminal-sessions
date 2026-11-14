@@ -22,14 +22,16 @@ export type TrafficFlagFinding =
   | { kind: 'file'; path: string; line: number }
   | { kind: 'env' };
 
-/** The Claude settings files the extension may read and edit: the user's, and
- *  each open workspace folder's shared and local one. Nothing else. */
+/** The Claude settings files the extension may read and edit, in the order
+ *  Claude Code applies them (the first that sets a value wins): each open
+ *  workspace folder's local one, its shared one, then the user's. Nothing else. */
 export function claudeSettingsCandidates(workspaceFolders: readonly string[]): string[] {
-  const out = [path.join(os.homedir(), '.claude', 'settings.json')];
+  const out: string[] = [];
   for (const folder of workspaceFolders) {
     if (!path.isAbsolute(folder)) continue;
     out.push(path.join(folder, '.claude', 'settings.local.json'), path.join(folder, '.claude', 'settings.json'));
   }
+  out.push(path.join(os.homedir(), '.claude', 'settings.json'));
   return out;
 }
 
@@ -129,18 +131,44 @@ function isFixed(out: string, before: Record<string, unknown>): boolean {
  *  path is not one of them, the file changed shape, or the write failed. */
 export function fixTrafficFlagFile(file: string, workspaceFolders: readonly string[]): boolean {
   if (!claudeSettingsCandidates(workspaceFolders).includes(path.resolve(file))) return false;
+  let tmp: string | undefined;
   try {
-    const text = fs.readFileSync(file, 'utf8');
+    // A settings file kept in a dotfiles repo is a symlink: the edit goes to
+    // the file it points at, and the link stays a link.
+    const target = fs.realpathSync(file);
+    const text = fs.readFileSync(target, 'utf8');
     const out = replaceTrafficFlag(text);
     if (out === undefined) return false;
-    const mode = fs.statSync(file).mode & 0o777;
-    const tmp = `${file}.${process.pid}.tmp`;
+    const mode = fs.statSync(target).mode & 0o777;
+    tmp = `${target}.${process.pid}.tmp`;
     fs.writeFileSync(tmp, out, { mode });
-    fs.renameSync(tmp, file);
+    fs.chmodSync(tmp, mode);   // writeFileSync's mode goes through the umask
+    // Someone else wrote the file meanwhile (Claude Code saves settings too):
+    // leave their version and report failure instead of overwriting it.
+    if (fs.readFileSync(target, 'utf8') !== text) { fs.unlinkSync(tmp); return false; }
+    fs.renameSync(tmp, target);
     return true;
   } catch {
+    if (tmp) { try { fs.unlinkSync(tmp); } catch { /* never written */ } }
     return false;
   }
+}
+
+/** Apply the replacement to every known settings file that sets the variable
+ *  (a project file and the user file can both carry it, and one left behind
+ *  keeps the titles off). Returns the files changed and the first that could
+ *  not be. */
+export function fixTrafficFlagEverywhere(
+  workspaceFolders: readonly string[],
+): { fixed: string[]; failed?: string } {
+  const fixed: string[] = [];
+  for (let i = 0; i < 8; i++) {
+    const f = findTrafficFlag(workspaceFolders, {});
+    if (!f || f.kind !== 'file') break;
+    if (!fixTrafficFlagFile(f.path, workspaceFolders)) return { fixed, failed: f.path };
+    fixed.push(f.path);
+  }
+  return { fixed };
 }
 
 /** What to do by hand when the variable comes from the shell. */

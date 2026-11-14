@@ -13,11 +13,12 @@ import {
   TRAFFIC_FLAG_PARTS,
   claudeSettingsCandidates,
   findTrafficFlag,
+  fixTrafficFlagEverywhere,
   fixTrafficFlagFile,
   replaceTrafficFlag,
   shellFixInstructions,
 } from '../src/title-traffic-flag';
-import { FIRST_PROMPT_RETRY_MS, FIRST_PROMPT_WAIT_MS, firstPromptTitle } from '../src/title-first-prompt';
+import { FIRST_PROMPT_RETRY_MS, FIRST_PROMPT_WAIT_MS, firstPromptTitle, readClaudeFirstPrompt } from '../src/title-first-prompt';
 
 const envOf = (text: string): Record<string, unknown> => JSON.parse(text).env;
 
@@ -87,8 +88,9 @@ test('findTrafficFlag reads the known settings files first, then the environment
   const userFile = path.join(os.homedir(), '.claude', 'settings.json');
   const local = path.join(ws, '.claude', 'settings.local.json');
   try {
+    // Claude Code's own precedence: project local, project shared, user.
     assert.deepEqual(claudeSettingsCandidates([ws, 'relative/dir']), [
-      userFile, local, path.join(ws, '.claude', 'settings.json'),
+      local, path.join(ws, '.claude', 'settings.json'), userFile,
     ]);
     assert.equal(findTrafficFlag([ws], {}), undefined);
     assert.deepEqual(findTrafficFlag([ws], { [TRAFFIC_FLAG]: '1' }), { kind: 'env' });
@@ -148,4 +150,75 @@ test('firstPromptTitle stands in only for an untitled conversation, after the wa
   assert.equal(reads, 1);
   assert.equal(firstPromptTitle(empty, read('now'), t0 + FIRST_PROMPT_RETRY_MS, true), 'now');
   assert.equal(firstPromptTitle({}, () => { throw new Error('locked'); }, t0, true), undefined);
+});
+
+test('fixTrafficFlagFile edits through a symlink and leaves no temp file', () => {
+  const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'ts-flag-link-'));
+  const dotfiles = path.join(ws, 'dotfiles');
+  const real = path.join(dotfiles, 'claude-settings.json');
+  const link = path.join(ws, '.claude', 'settings.json');
+  try {
+    fs.mkdirSync(dotfiles);
+    fs.mkdirSync(path.dirname(link));
+    fs.writeFileSync(real, `{\n  "env": {\n    "${TRAFFIC_FLAG}": "1"\n  }\n}\n`);
+    fs.symlinkSync(real, link);
+    assert.equal(fixTrafficFlagFile(link, [ws]), true);
+    assert.equal(fs.lstatSync(link).isSymbolicLink(), true);
+    assert.deepEqual(Object.keys(envOf(fs.readFileSync(real, 'utf8'))), [...TRAFFIC_FLAG_PARTS]);
+    assert.deepEqual(fs.readdirSync(dotfiles), ['claude-settings.json']);
+    assert.deepEqual(fs.readdirSync(path.dirname(link)), ['settings.json']);
+  } finally {
+    fs.rmSync(ws, { recursive: true, force: true });
+  }
+});
+
+test('readClaudeFirstPrompt reads the first typed prompt from the head of the transcript', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ts-first-'));
+  const rec = (o: unknown) => JSON.stringify(o) + '\n';
+  try {
+    const tp = path.join(dir, 'a.jsonl');
+    fs.writeFileSync(tp,
+      rec({ type: 'summary', summary: 'x' })
+      + rec({ type: 'user', isSidechain: true, message: { content: 'subagent prompt' } })
+      + rec({ type: 'user', message: { content: [{ type: 'tool_result', content: 'x' }] } })
+      + rec({ type: 'user', message: { content: [{ type: 'text', text: 'Fix the login redirect' }] } })
+      + rec({ type: 'user', message: { content: 'second prompt' } })
+      // A huge tail must not be read: the reader stops at the head limit.
+      + rec({ type: 'assistant', message: { content: 'y'.repeat(3 * 1024 * 1024) } }));
+    assert.equal(readClaudeFirstPrompt(tp), 'Fix the login redirect');
+    const empty = path.join(dir, 'b.jsonl');
+    fs.writeFileSync(empty, rec({ type: 'assistant', message: { content: 'hi' } }));
+    assert.equal(readClaudeFirstPrompt(empty), undefined);
+    assert.equal(readClaudeFirstPrompt(path.join(dir, 'missing.jsonl')), undefined);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('firstPromptTitle keeps a title it already showed when a stopped session starts again', () => {
+  const c: { first?: string; firstAt?: number; firstReadAt?: number; firstShown?: boolean } = {};
+  const t0 = 5_000_000;
+  assert.equal(firstPromptTitle(c, () => 'resume me', t0, true), 'resume me');
+  // Running now, well inside the wait: still shown.
+  assert.equal(firstPromptTitle(c, () => undefined, t0 + 1000, false), 'resume me');
+});
+
+test('fixTrafficFlagEverywhere fixes the project file and the user file when both set the variable', () => {
+  const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'ts-flag-all-'));
+  const project = path.join(ws, '.claude', 'settings.json');
+  const user = path.join(os.homedir(), '.claude', 'settings.json');
+  const body = `{\n  "env": {\n    "${TRAFFIC_FLAG}": "1"\n  }\n}\n`;
+  try {
+    fs.mkdirSync(path.dirname(project), { recursive: true });
+    fs.mkdirSync(path.dirname(user), { recursive: true });
+    fs.writeFileSync(project, body);
+    fs.writeFileSync(user, body);
+    // The project file wins in Claude Code, so it is the one reported first.
+    assert.deepEqual(findTrafficFlag([ws], {}), { kind: 'file', path: project, line: 2 });
+    assert.deepEqual(fixTrafficFlagEverywhere([ws]), { fixed: [project, user] });
+    assert.equal(findTrafficFlag([ws], {}), undefined);
+  } finally {
+    fs.rmSync(ws, { recursive: true, force: true });
+    fs.rmSync(user, { force: true });
+  }
 });

@@ -4,7 +4,7 @@ import {
   TRAFFIC_FLAG,
   TrafficFlagFinding,
   findTrafficFlag,
-  fixTrafficFlagFile,
+  fixTrafficFlagEverywhere,
   shellFixInstructions,
 } from './title-traffic-flag';
 
@@ -13,6 +13,11 @@ import {
 
 const DISMISSED_KEY = 'followTitle.trafficFlagDismissed';
 const STARTUP_SHOWN_KEY = 'followTitle.trafficFlagStartupShown';
+/** When a window last put the dialog up: other windows starting in the same
+ *  minute do not ask the same question on top of it. */
+const SHOWING_AT_KEY = 'followTitle.trafficFlagShowingAt';
+const SHOWING_MS = 60_000;
+let open = false;
 
 const TURN_ON = 'Turn On Titles';
 const SHOW = 'Show the Setting';
@@ -21,6 +26,16 @@ const KEEP = 'Use First Prompt Instead';
 
 function workspaceFolders(): string[] {
   return (vscode.workspace.workspaceFolders ?? []).filter(f => f.uri.scheme === 'file').map(f => f.uri.fsPath);
+}
+
+/** A stored list of finding keys (older builds stored one string). */
+function keys(ctx: vscode.ExtensionContext, name: string): string[] {
+  const v = ctx.globalState.get<string[] | string>(name);
+  return Array.isArray(v) ? v : typeof v === 'string' ? [v] : [];
+}
+async function addKey(ctx: vscode.ExtensionContext, name: string, key: string): Promise<void> {
+  const list = keys(ctx, name);
+  if (!list.includes(key)) await ctx.globalState.update(name, [...list, key].slice(-50));
 }
 
 function findingKey(f: TrafficFlagFinding): string {
@@ -39,15 +54,35 @@ function tildePath(p: string): string {
  * never after "Use First Prompt Instead").
  */
 export async function maybeOfferTitleFix(ctx: vscode.ExtensionContext, reason: 'enabled' | 'startup'): Promise<void> {
+  if (open) return;
   const folders = workspaceFolders();
   const finding = findTrafficFlag(folders);
   if (!finding) return;
   const key = findingKey(finding);
   if (reason === 'startup') {
-    if (ctx.globalState.get<string>(DISMISSED_KEY) === key) return;
-    if (ctx.globalState.get<string>(STARTUP_SHOWN_KEY) === key) return;
-    await ctx.globalState.update(STARTUP_SHOWN_KEY, key);
+    if (keys(ctx, DISMISSED_KEY).includes(key)) return;
+    if (keys(ctx, STARTUP_SHOWN_KEY).includes(key)) return;
+  } else if (!vscode.window.state.focused) {
+    // The setting change reaches every window: the one in front asks.
+    return;
   }
+  // Another window put the same dialog up a moment ago.
+  if (Date.now() - (ctx.globalState.get<number>(SHOWING_AT_KEY) ?? 0) < SHOWING_MS) return;
+  open = true;
+  try {
+    await ctx.globalState.update(SHOWING_AT_KEY, Date.now());
+    await ask(ctx, finding, key, folders);
+  } finally {
+    open = false;
+  }
+}
+
+async function ask(
+  ctx: vscode.ExtensionContext,
+  finding: TrafficFlagFinding,
+  key: string,
+  folders: string[],
+): Promise<void> {
 
   const common = 'Follow Conversation Title uses the title Claude Code writes for each conversation. '
     + `Since Claude Code 2.1.316, the setting ${TRAFFIC_FLAG} also turns those titles off. `
@@ -66,17 +101,24 @@ export async function maybeOfferTitleFix(ctx: vscode.ExtensionContext, reason: '
     ...buttons,
   );
 
+  // Asked and answered: startup does not ask again for this finding. Closing
+  // the dialog with Escape is not an answer, so the next startup asks again.
+  if (choice !== undefined) await addKey(ctx, STARTUP_SHOWN_KEY, key);
+
   if (choice === TURN_ON && finding.kind === 'file') {
-    if (fixTrafficFlagFile(finding.path, folders)) {
+    const { fixed, failed } = fixTrafficFlagEverywhere(folders);
+    if (!failed && fixed.length > 0) {
       void vscode.window.showInformationMessage(
-        `Titles are on: ${TRAFFIC_FLAG} was replaced in ${tildePath(finding.path)}. Restart the running Claude sessions to pick it up.`,
+        `Titles are on: ${TRAFFIC_FLAG} was replaced in ${fixed.map(tildePath).join(', ')}. Restart the running Claude sessions to pick it up.`,
       );
     } else {
-      const open = await vscode.window.showErrorMessage(
-        `Could not change ${tildePath(finding.path)}. Open it and remove ${TRAFFIC_FLAG} by hand.`,
+      const bad = failed ?? finding.path;
+      const again = findTrafficFlag(folders, {});
+      const openIt = await vscode.window.showErrorMessage(
+        `Could not change ${tildePath(bad)}. Open it and remove ${TRAFFIC_FLAG} by hand.`,
         SHOW,
       );
-      if (open === SHOW) await showSetting(finding);
+      if (openIt === SHOW) await showSetting(again && again.kind === 'file' ? again : { kind: 'file', path: bad, line: 0 });
     }
   } else if (choice === SHOW && finding.kind === 'file') {
     await showSetting(finding);
@@ -84,7 +126,7 @@ export async function maybeOfferTitleFix(ctx: vscode.ExtensionContext, reason: '
     await vscode.env.clipboard.writeText(shellFixInstructions());
     void vscode.window.showInformationMessage('Fix instructions copied to the clipboard.');
   } else if (choice === KEEP) {
-    await ctx.globalState.update(DISMISSED_KEY, key);
+    await addKey(ctx, DISMISSED_KEY, key);
   }
 }
 

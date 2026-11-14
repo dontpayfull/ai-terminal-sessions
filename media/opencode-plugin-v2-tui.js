@@ -26,6 +26,10 @@
 //   • A root created from the home screen is announced before the router has
 //     moved to it: its events are held for a few seconds until the screen
 //     shows it, then replayed in order.
+//   • A conversation is reported by ONE pane: the last one whose screen opened
+//     it (a small owner file next to the transcript). The extension allows a
+//     conversation in one tmux session only, so two panes reporting the same
+//     one would take it from each other on every event.
 //   • Binding to a conversation that is already running or already waiting on
 //     the user restores that state right after the SessionStart.
 //   • Turn end = `session.execution.succeeded|failed|interrupted`. These are
@@ -173,7 +177,19 @@ function contentText(content) {
 }
 
 const ROUTE_POLL_MS = 1000
-const FRESH_HOLD_MS = 5000
+/** Event types `handle` acts on. */
+const HANDLED = new Set([
+  "session.created", "session.renamed", "session.deleted", "session.inbox.enqueued",
+  "session.execution.succeeded", "session.execution.failed", "session.execution.interrupted",
+  "session.step.started", "session.step.ended", "session.step.failed", "session.text.ended",
+  "session.tool.input.started", "session.tool.called", "session.tool.success", "session.tool.failed",
+  "permission.asked", "permission.replied", "permission.rejected",
+  "form.created", "form.replied", "form.cancelled",
+])
+/** `context.data.session.status()` values that mean a turn is in progress. */
+const RUNNING = new Set(["running", "busy", "retry"])
+const FRESH_HOLD_MS = 30000
+const OWNER_CHECK_MS = 500
 const FRESH_MAX_EVENTS = 200
 
 export default {
@@ -200,10 +216,44 @@ export default {
 
     function remember(map, key, value) {
       if (!map.has(key) && map.size >= MAX_TRACKED) {
-        const first = map.keys().next().value
-        if (first !== undefined) map.delete(first)
+        // Oldest first, but never this pane's own conversation or its
+        // subagents: other terminals' sessions must not push them out.
+        for (const k of map.keys()) {
+          if (k === bound || parentOf.get(k) === bound) continue
+          map.delete(k)
+          break
+        }
       }
       map.set(key, value)
+    }
+
+    // ── which pane reports a conversation (one file per root, holds a pid) ──
+    const ownerFile = (root) => path.join(TRANSCRIPT_DIR, root + ".owner")
+    let ownerSeen = { root: null, at: 0, mine: false }
+    function claim(root) {
+      try {
+        if (ensureDir()) fs.writeFileSync(ownerFile(root), String(PID), { mode: 0o600 })
+      } catch {}
+      ownerSeen = { root, at: Date.now(), mine: true }
+    }
+    /** True while this pane is the one reporting `root`. A pane whose owner
+     *  exited (or never wrote the file) takes over. */
+    function isOwner(root) {
+      const now = Date.now()
+      if (ownerSeen.root === root && now - ownerSeen.at < OWNER_CHECK_MS) return ownerSeen.mine
+      let pid = NaN
+      try { pid = parseInt(fs.readFileSync(ownerFile(root), "utf8"), 10) } catch {}
+      let mine = pid === PID
+      if (!mine) {
+        let alive = false
+        if (pid > 0) { try { process.kill(pid, 0); alive = true } catch (e) { alive = !!e && e.code === "EPERM" } }
+        if (!alive) { claim(root); return true }
+      }
+      ownerSeen = { root, at: now, mine }
+      return mine
+    }
+    function release(root) {
+      try { if (parseInt(fs.readFileSync(ownerFile(root), "utf8"), 10) === PID) fs.unlinkSync(ownerFile(root)) } catch {}
     }
 
     const defaultDirectory = () => {
@@ -308,22 +358,51 @@ export default {
     /** Bind the pane to `root` and announce it. `created` = the session.created
      *  payload when this TUI saw the conversation being born. */
     function bind(root, created) {
+      if (bound && bound !== root) release(bound)
       bound = root
+      claim(root)
       const first = !announced.has(root)
       remember(announced, root, true)
       learn(root)
       ensureHeaders(root)
+      // Renamed while another conversation was on screen: the TUI's record has
+      // the current title, the transcript still the old one.
+      if (!created) {
+        let info
+        try { info = context.data.session.get(root) } catch { info = undefined }
+        if (info && typeof info.title === "string" && info.title !== titleOf.get(root)) writeSession(root, info.title)
+      }
       if (created && first) {
         emit("SessionStart", { ...base(root), title: created.title || null })
         return
       }
       emit("SessionStart", { ...base(root), title: titleOf.get(root) || null, resumed: true, source: "resume" })
-      // A SessionStart reads as "idle". Restore what the conversation is doing.
-      const status = sessionStatus(root)
-      if (typeof status === "string" && status !== "idle") emit("PostToolUse", { ...base(root), tool_name: "", tool_input: "" })
+      // A SessionStart reads as "idle". Restore what the conversation is doing:
+      // a turn in progress (OpenCode 2 reports "running"), then any wait.
+      if (RUNNING.has(sessionStatus(root))) emit("PostToolUse", { ...base(root), tool_name: "", tool_input: "" })
       for (const w of waiting.values()) {
         if (rootOf(w.sessionID) === root) emit("Notification", { ...base(w.sessionID), message: w.message, kind: w.kind })
       }
+      void adoptPending(root)
+    }
+
+    /** Requests that were asked before this pane was bound to the conversation
+     *  (another terminal, or before this TUI started) are only in the server's
+     *  list: fetch it and report the ones not announced yet. */
+    async function adoptPending(root) {
+      const data = context.data.session
+      try {
+        await Promise.allSettled([
+          Promise.resolve(data.permission && data.permission.sync && data.permission.sync(root)),
+          Promise.resolve(data.form && data.form.sync && data.form.sync(root, context.location)),
+        ])
+        if (bound !== root) return
+        let perms, forms
+        try { perms = data.permission.list(root) } catch { perms = undefined }
+        try { forms = data.form.list(root, context.location) } catch { forms = undefined }
+        for (const p of Array.isArray(perms) ? perms : []) handle("permission.asked", p)
+        for (const f of Array.isArray(forms) ? forms : []) handle("form.created", { form: f })
+      } catch {}
     }
 
     /** Follow the screen. The home screen keeps the current binding. */
@@ -341,6 +420,8 @@ export default {
       if (typeof id !== "string") return false
       checkRoute()
       if (bound === null || rootOf(id) !== bound) return false
+      // Another pane opened this conversation since: it reports it now.
+      if (!isOwner(bound)) return false
       if (id !== bound) ensureHeaders(id)
       return true
     }
@@ -354,6 +435,9 @@ export default {
     }
 
     function dispatch(type, d) {
+      // Streaming deltas and the rest are not ours: they must not fill the
+      // hold queue of a conversation that is about to be shown.
+      if (!HANDLED.has(type)) return
       // Events of a root that was just created but is not on screen yet wait
       // for the router (or expire: it was another terminal's conversation).
       if (type !== "session.created" && fresh.size) {
@@ -408,6 +492,11 @@ export default {
         case "session.deleted": {
           const id = d.sessionID
           if (typeof id !== "string") break
+          // The conversation on this pane is gone: say so before forgetting it.
+          if (bound === id) {
+            if (isOwner(id)) emit("SessionEnd", { ...base(id), reason: "deleted" })
+            release(id)
+          }
           errored.delete(id); announced.delete(id); fresh.delete(id)
           parentOf.delete(id); dirOf.delete(id); titleOf.delete(id); metaOf.delete(id); cachedTitle.delete(id)
           for (const [rid, w] of waiting) if (w.sessionID === id) waiting.delete(rid)
@@ -458,9 +547,17 @@ export default {
         case "session.step.ended": {
           const id = d.sessionID
           if (typeof d.assistantMessageID !== "string") break
-          const step = stepOf.get(d.assistantMessageID) || {}
+          let step = stepOf.get(d.assistantMessageID)
           stepOf.delete(d.assistantMessageID)
           if (!owned(id)) break
+          if (!step) {
+            // The step started before this pane was bound: the session's own
+            // record still says which model and agent it runs on.
+            let info
+            try { info = context.data.session.get(id) } catch { info = undefined }
+            const m = (info && info.model) || {}
+            step = { providerID: m.providerID || null, modelID: m.id || null, agent: (info && info.agent) || null, started: null }
+          }
           const t = d.tokens || {}
           const cache = t.cache || {}
           const input = t.input || 0, output = t.output || 0, reasoning = t.reasoning || 0
@@ -614,7 +711,10 @@ export default {
     return () => {
       clearInterval(poll)
       try { if (typeof stop === "function") stop() } catch {}
-      if (bound) emit("SessionEnd", { ...base(bound), reason: "shutdown" })
+      if (bound && isOwner(bound)) {
+        emit("SessionEnd", { ...base(bound), reason: "shutdown" })
+        release(bound)
+      }
     }
   },
 }

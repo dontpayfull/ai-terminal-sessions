@@ -57,6 +57,9 @@ const OPENCODE_FLAGS: FlagSpec = {
   alias: { '-m': '--model' },
 };
 
+/** `opencode --version` of OpenCode 2 and later ("opencode v2.3.0"); 1.x
+ *  prints the bare number ("1.19.4"). A shell `case` pattern. */
+const V2_VERSION = '*v[2-9].*|[2-9].*';
 /** Launch flags the OpenCode 2 TUI accepts, from a captured set that may come
  *  from a 1.x process (2.x dropped `--model`, `--agent`, `--mini`, `--pure`,
  *  and knows only `--auto` for auto-approve). */
@@ -279,10 +282,16 @@ export const opencodeProvider: AgentProvider = {
   ): string {
     const recorded = (transcriptPath ? readOpencodeTranscriptCwd(transcriptPath) : undefined)
       ?? opencodeSessionDirectory(sessionId);
-    const base = recorded && recorded !== terminalCwd
-      ? `cd ${posixQuote(recorded)} && opencode -s ${posixQuote(sessionId)}`
-      : `opencode -s ${posixQuote(sessionId)}`;
-    return withFlags(base, extraFlags, OPENCODE_FLAGS);
+    const id = posixQuote(sessionId);
+    const v1 = withFlags(`opencode -s ${id}`, extraFlags, OPENCODE_FLAGS);
+    // Flags captured from a 1.x process (`--model`, `--agent`, `--yolo`) make
+    // the 2.x TUI exit with a usage error. Only when the set differs between
+    // the two versions does the pane's shell pick the form to run.
+    const flagsV2 = v2Flags(extraFlags);
+    const same = flagsV2.length === (extraFlags?.length ?? 0) && flagsV2.every((f, i) => f === extraFlags![i]);
+    const cmd = same ? v1
+      : `case "$(opencode --version 2>/dev/null | tail -1)" in ${V2_VERSION}) ${withFlags(`opencode -s ${id}`, flagsV2, OPENCODE_FLAGS)} ;; *) ${v1} ;; esac`;
+    return recorded && recorded !== terminalCwd ? `cd ${posixQuote(recorded)} && ${cmd}` : cmd;
   },
 
   buildForkCommand(
@@ -309,8 +318,8 @@ export const opencodeProvider: AgentProvider = {
     const fork = `${api} --param sessionID=${id} -d '{}'`
       + ` | grep -o '"id" *: *"ses_[0-9A-Za-z]*"' | head -1 | grep -o 'ses_[0-9A-Za-z]*'`;
     const failed = `echo 'Terminal Sessions: OpenCode could not fork this conversation' >&2`;
-    const branch = `case "$(opencode --version 2>/dev/null)" in`
-      + ` *v2.*|2.*) f=$(${fork}); if [ -n "$f" ]; then ${v2}; else ${failed}; fi ;;`
+    const branch = `case "$(opencode --version 2>/dev/null | tail -1)" in`
+      + ` ${V2_VERSION}) f=$(${fork}); if [ -n "$f" ]; then ${v2}; else ${failed}; fi ;;`
       + ` *) ${v1} ;; esac`;
     return recorded && recorded !== terminalCwd ? `cd ${posixQuote(recorded)} && ${branch}` : branch;
   },

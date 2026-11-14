@@ -113,6 +113,7 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   });
   // Agent state in the tab description: pointless before there is a session.
   queuePrompt(ctx, async () => { if (hasSessions()) await maybeOfferDescriptionTemplate(ctx); });
+  queuePrompt(ctx, async () => { if (getConfig().followConversationTitle) await maybeOfferTitleFix(ctx, 'startup'); });
 
   const statusBar = new StatusBar(index);
   statusBar.start();
@@ -125,7 +126,6 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   // Follow Conversation Title (off by default): rows and tabs show the title
   // of the conversation running in each session.
   const titles = new TitleFollower(index, claudeTracker, registry, tracker, refreshSidebar);
-  if (getConfig().followConversationTitle) void maybeOfferTitleFix(ctx, 'startup');
   setSidebarTitleSource(n => titles.titleFor(n));
   // A session's last Claude conversation title, from the search index.
   setConversationTitleSource(n => {

@@ -73,7 +73,7 @@ function runPlugin(script: string): { hooks: any[]; lines: Record<string, any[]>
       ? fs.readFileSync(f, 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l)) : [];
     const lines: Record<string, any[]> = {};
     const tdir = path.join(root, 'opencode');
-    for (const f of fs.existsSync(tdir) ? fs.readdirSync(tdir) : []) lines[f.replace(/\.jsonl$/, '')] = read(path.join(tdir, f));
+    for (const f of fs.existsSync(tdir) ? fs.readdirSync(tdir).filter(n => n.endsWith('.jsonl')) : []) lines[f.replace(/\.jsonl$/, '')] = read(path.join(tdir, f));
     return { hooks: read(path.join(home, 'hooks.log')), lines };
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
@@ -247,6 +247,61 @@ test('OpenCode 2 plugin restores a running turn and writes headers for subagents
   assert.equal(lines.ses_K, undefined);
 });
 
+test('OpenCode 2 plugin adopts requests asked before it was bound and survives a flood of deltas', () => {
+  const { hooks, lines } = runPlugin(`
+    sessions.set('ses_W', { id: 'ses_W', title: 'Renamed elsewhere', agent: 'build', model: { id: 'gpt-x', providerID: 'openai' }, location: { directory: '/work/app' } })
+    context.data.session.permission = {
+      sync: async () => {},
+      list: () => [{ id: 'per_9', sessionID: 'ses_W', action: 'shell', resources: ['make deploy'] }],
+    }
+    context.data.session.form = { sync: async () => {}, list: () => [] }
+    show('ses_W'); await sleep(1300)
+    // A step that started before the binding still gets its model.
+    fire('session.step.ended', { sessionID: 'ses_W', assistantMessageID: 'msg_late', finish: 'stop', tokens: { input: 1, output: 1 } })
+
+    // A new conversation whose stream outruns the router.
+    fire('session.created', { sessionID: 'ses_F', location: { directory: '/work/app' } })
+    fire('session.inbox.enqueued', { sessionID: 'ses_F', inboxID: 'm', item: { type: 'user', payload: { text: 'go' } } })
+    for (let i = 0; i < 500; i++) fire('session.text.delta', { sessionID: 'ses_F', delta: 'x' })
+    fire('session.execution.succeeded', { sessionID: 'ses_F' })
+    show('ses_F'); await sleep(1300)
+    // The conversation on screen is deleted.
+    fire('session.deleted', { sessionID: 'ses_F' })
+  `);
+  assert.deepEqual(hooks.map(h => `${h.hook_event_name}:${h.session_id}`), [
+    'SessionStart:ses_W', 'Notification:ses_W',
+    'SessionStart:ses_F', 'UserPromptSubmit:ses_F', 'Stop:ses_F', 'SessionEnd:ses_F',
+  ]);
+  assert.match(hooks[1].message, /permission to use shell \(make deploy\)/);
+  assert.equal(hooks[5].reason, 'deleted');
+  assert.equal(lines.ses_W[0].title, 'Renamed elsewhere');
+  const late = lines.ses_W.find(l => l.type === 'assistant');
+  assert.equal(late.providerID, 'openai');
+  assert.equal(late.modelID, 'gpt-x');
+});
+
+test('OpenCode 2 plugin lets one pane report a conversation: the last one that opened it', () => {
+  const { hooks } = runPlugin(`
+    const owner = process.env.HOME + '/.terminal-sessions/opencode/ses_A.owner'
+    const fsx = await import('node:fs')
+    show('ses_A')
+    fire('session.created', { sessionID: 'ses_A', location: { directory: '/work/app' } })
+    await sleep(100)
+    // Another terminal (a live process) opened the same conversation.
+    fsx.writeFileSync(owner, String(process.ppid))
+    await sleep(700)
+    fire('session.inbox.enqueued', { sessionID: 'ses_A', inboxID: 'm1', item: { type: 'user', payload: { text: 'theirs' } } })
+    fire('session.execution.succeeded', { sessionID: 'ses_A' })
+    // It moved on (or exited): this pane reports again.
+    fsx.unlinkSync(owner)
+    await sleep(700)
+    fire('session.inbox.enqueued', { sessionID: 'ses_A', inboxID: 'm2', item: { type: 'user', payload: { text: 'mine again' } } })
+  `);
+  assert.deepEqual(hooks.map(h => `${h.hook_event_name}:${h.message ?? ''}`), [
+    'SessionStart:', 'UserPromptSubmit:mine again', 'SessionEnd:',
+  ]);
+});
+
 // ───────────────────────── database: session_v2 ─────────────────────────
 
 test('OpenCode 2 database: sessions come from session_v2 with the first prompt', { skip: !sqlite3() }, () => {
@@ -324,10 +379,34 @@ test('OpenCode hook install writes the 1.x file and the 2.x TUI part', { skip: !
   assert.equal(fs.existsSync(path.dirname(PLUGIN_V2_PATH)), false);
 });
 
+test('OpenCode resume command drops 1.x-only flags on OpenCode 2, and stays plain when it can', () => {
+  const id = 'ses_aaaaaaaaaaaaaaaaaaaaaaaa';
+  assert.equal(opencodeProvider.buildResumeCommand(id, '/work/app', undefined, ['--auto', '--standalone']),
+    `opencode -s '${id}' '--auto' '--standalone'`);
+  assert.equal(opencodeProvider.buildResumeCommand(id, '/work/app'), `opencode -s '${id}'`);
+  const cmd = opencodeProvider.buildResumeCommand(id, '/work/app', undefined, ['--model', 'openai/gpt-x', '--yolo']);
+  assert.equal(cmd, `case "$(opencode --version 2>/dev/null | tail -1)" in *v[2-9].*|[2-9].*) opencode -s '${id}' '--auto' ;; `
+    + `*) opencode -s '${id}' '--model' 'openai/gpt-x' '--yolo' ;; esac`);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ts-oc2-resume-'));
+  try {
+    const run = (version: string) => {
+      fs.writeFileSync(path.join(dir, 'opencode'),
+        `#!/bin/sh\nif [ "$1" = "--version" ]; then echo 'warning: config notice'; echo '${version}'; exit 0; fi\necho "$*"\n`, { mode: 0o755 });
+      return spawnSync('/bin/sh', ['-c', cmd], { encoding: 'utf8', env: { ...process.env, PATH: `${dir}:/usr/bin:/bin` } }).stdout.trim();
+    };
+    assert.equal(run('opencode v2.3.0'), `-s ${id} --auto`);
+    assert.equal(run('opencode v3.0.1'), `-s ${id} --auto`);
+    assert.equal(run('1.19.4'), `-s ${id} --model openai/gpt-x --yolo`);
+    assert.equal(run('1.2.0'), `-s ${id} --model openai/gpt-x --yolo`);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('OpenCode fork command covers the 1.x flag and the 2.x server API', () => {
   const flags = ['--model', 'openai/gpt-x', '--yolo', '--server', 'http://remote:4096'];
   const cmd = opencodeProvider.buildForkCommand!('ses_aaaaaaaaaaaaaaaaaaaaaaaa', '/work/app', undefined, flags);
-  assert.match(cmd, /^case "\$\(opencode --version 2>\/dev\/null\)" in /);
+  assert.match(cmd, /^case "\$\(opencode --version 2>\/dev\/null \| tail -1\)" in /);
   // 1.x keeps every captured flag.
   assert.ok(cmd.includes(`*) opencode -s 'ses_aaaaaaaaaaaaaaaaaaaaaaaa' --fork '--model' 'openai/gpt-x' '--yolo' '--server' 'http://remote:4096' ;; esac`));
   // 2.x: the fork is made on the same server the TUI opens, with the flags

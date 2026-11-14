@@ -13,7 +13,7 @@ import { PARKED_PREFIX } from './profile-provider';
 import { isWalkingTabs, runTabWalk } from './tab-order';
 import type { TerminalTracker } from './terminal-tracker';
 import type { SessionLabel } from './types';
-import { firstPromptTitle } from './title-first-prompt';
+import { firstPromptTitle, readClaudeFirstPrompt, SUMMARY_MAX_BYTES } from './title-first-prompt';
 
 // Follow Conversation Title (opt-in): a session shows the title of the
 // conversation running in it, the one the agent generated or the one set with
@@ -87,6 +87,7 @@ export interface TitleCache {
   first?: string;
   firstAt?: number;
   firstReadAt?: number;
+  firstShown?: boolean;
 }
 
 /** Seconds since the last keyboard or mouse input, macOS only. */
@@ -144,7 +145,7 @@ export async function scanTitles(tp: string, c: TitleCache, st: fs.Stats, agent:
   c.reading = true;
   try {
     // Rewritten or truncated: start over.
-    if (st.size < c.offset) { c.offset = 0; c.custom = undefined; c.recordCustom = undefined; c.recordSeen = undefined; c.auto = undefined; c.first = undefined; c.firstAt = undefined; c.firstReadAt = undefined; }
+    if (st.size < c.offset) { c.offset = 0; c.custom = undefined; c.recordCustom = undefined; c.recordSeen = undefined; c.auto = undefined; c.first = undefined; c.firstAt = undefined; c.firstReadAt = undefined; c.firstShown = undefined; }
     const fh = await fs.promises.open(tp, 'r');
     try {
       let carry: Buffer = Buffer.alloc(0);
@@ -303,7 +304,10 @@ export class TitleFollower implements vscode.Disposable {
           this.settling.delete(name);
           if (this.shown.delete(name)) changed = true;
         }
-        const title = await this.currentTitle(name);
+        // A title already kept for this conversation (a reload, a resume) is
+        // shown again at once, without the first-prompt wait.
+        const kept = !!meta.followedTitle && !!conv && meta.followedTitleConv === conv;
+        const title = await this.currentTitle(name, kept);
         // No title (yet, or the agent has gone): the session's own name.
         if (!title) {
           this.settling.delete(name);
@@ -375,14 +379,14 @@ export class TitleFollower implements vscode.Disposable {
   }
 
   /** The title of the conversation running in a session, read on change. */
-  private async currentTitle(sessionName: string): Promise<string | undefined> {
+  private async currentTitle(sessionName: string, kept = false): Promise<string | undefined> {
     const snap = this.tracker.getSnapshot(sessionName);
     const tp = snap?.transcriptPath;
     // 'none': no agent runs in the session (any more).
     if (!snap || snap.state === 'none' || !tp) return undefined;
     const c = await this.readTitles(tp, snap.agent ?? 'claude');
     return cleanTitle(conversationTitle(
-      { sessionId: snap.sessionId ?? '', customTitle: c?.custom, autoTitle: c?.auto, firstUserMessage: this.firstPrompt(tp, snap.agent ?? 'claude', c, false) },
+      { sessionId: snap.sessionId ?? '', customTitle: c?.custom, autoTitle: c?.auto, firstUserMessage: this.firstPrompt(tp, snap.agent ?? 'claude', c, kept) },
       id => (id ? this.index.getSessionName(id) : undefined),
       200,
     ).title);
@@ -391,7 +395,13 @@ export class TitleFollower implements vscode.Disposable {
   /** The first prompt of an untitled conversation, the title of last resort. */
   private firstPrompt(tp: string, agent: string, c: TitleCache | undefined, immediate: boolean): string | undefined {
     if (!c) return undefined;
-    return firstPromptTitle(c, () => this.registry.getProvider(agent)?.readTranscriptSummary?.(tp)?.firstUserMessage, Date.now(), immediate);
+    return firstPromptTitle(c, () => {
+      if (agent === 'claude') return readClaudeFirstPrompt(tp);
+      // Other agents: their own summary reader, unless the file is too big to
+      // read whole on the extension host.
+      if (c.size > SUMMARY_MAX_BYTES) return undefined;
+      return this.registry.getProvider(agent)?.readTranscriptSummary?.(tp)?.firstUserMessage;
+    }, Date.now(), immediate);
   }
 
   private async readTitles(tp: string, agent: string): Promise<TitleCache | undefined> {

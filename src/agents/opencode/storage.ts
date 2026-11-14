@@ -163,8 +163,12 @@ export function listOpencodeSessions(cwd?: string, limit = 200): OpencodeSession
   const db = opencodeDbPath();
   if (!db) return [];
   const tables = tablesOf(db);
-  const table = sessionTable(tables);
+  let table = sessionTable(tables);
   if (!table) return [];
+  // A 2.x table that is there but empty (created, not migrated yet) must not
+  // hide the conversations still in the 1.x one.
+  if (table === 'session_v2' && tables.has('session')
+    && querySqlite(db, 'SELECT 1 FROM session_v2 LIMIT 1').length === 0) table = 'session';
   const where = ['parent_id IS NULL', 'time_archived IS NULL'];
   if (cwd) {
     const base = cwd.replace(/\/+$/, '');
